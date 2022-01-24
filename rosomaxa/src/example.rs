@@ -369,7 +369,9 @@ impl Solver {
             .build()?;
 
         // solve the problem
-        let (solutions, metrics) = EvolutionSimulator::new(config)?.run()?;
+        let (solutions, metrics) = EvolutionSimulator::new(config)?.run(&mut |_s| {
+            // Ignore
+        })?;
 
         let solutions = solutions
             .into_iter()

@@ -278,8 +278,12 @@ impl Solver {
 
     /// Solves a Vehicle Routing Problem and returns a _(solution, its cost)_ pair in case of success
     /// or error description, if solution cannot be found.
-    pub fn solve(self) -> Result<(Solution, Cost, Option<TelemetryMetrics>), String> {
-        let (mut solutions, metrics) = EvolutionSimulator::new(self.config)?.run()?;
+    pub fn solve(self) -> Result<(Solution, Cost, Option<TelemetryMetrics>, Vec<Solution>), String> {
+        let mut intermediate_solutions = vec![];
+        let (mut solutions, metrics) = EvolutionSimulator::new(self.config)?.run(&mut |s| {
+            let intermediate_best_solution = s.solution.to_solution(self.problem.extras.clone());
+            intermediate_solutions.push(intermediate_best_solution);
+        })?;
 
         // NOTE select the first best individual from population
         let insertion_ctx = if solutions.is_empty() { None } else { solutions.drain(0..1).next() }
@@ -288,6 +292,6 @@ impl Solver {
         let solution = insertion_ctx.solution.to_solution(self.problem.extras.clone());
         let cost = self.problem.objective.fitness(&insertion_ctx);
 
-        Ok((solution, cost, metrics))
+        Ok((solution, cost, metrics, intermediate_solutions))
     }
 }

@@ -31,7 +31,7 @@ where
 
     /// Runs evolution for given `problem` using evolution `config`.
     /// Returns populations filled with solutions.
-    pub fn run(self) -> EvolutionResult<S> {
+    pub fn run(self, on_solver_generation_callback: &mut dyn FnMut(S)) -> EvolutionResult<S> {
         let mut config = self.config;
 
         config.telemetry.log("preparing initial solution(-s)");
@@ -100,7 +100,11 @@ where
             config.telemetry.log("created an empty population");
         }
 
-        config.strategy.as_ref().run(heuristic_ctx, config.heuristic, config.termination, config.telemetry).map(
+        let mut on_generation_callback = |s: S| {
+            let hooked_solution = hooks.solution.iter().fold(s, |ss, hook| hook.post_process(ss));
+            on_solver_generation_callback(hooked_solution)
+        };
+        config.strategy.as_ref().run(heuristic_ctx, config.heuristic, config.termination, config.telemetry, &mut on_generation_callback).map(
             |(solutions, metrics)| {
                 let solutions = solutions
                     .into_iter()
@@ -154,6 +158,7 @@ where
         >,
         termination: Box<dyn Termination<Context = Self::Context, Objective = Self::Objective>>,
         telemetry: Telemetry<Self::Context, Self::Objective, Self::Solution>,
+        on_generation_callback: &mut dyn FnMut(S),
     ) -> EvolutionResult<Self::Solution> {
         let mut heuristic_ctx = heuristic_ctx;
         let mut heuristic = heuristic;
@@ -172,6 +177,13 @@ where
                 false
             };
 
+            let mut current_best_solutions = heuristic_ctx
+                .population()
+                .ranked()
+                .map(|(solution, _)| solution.deep_copy())
+                .take(1)
+                .collect::<Vec<S>>();
+            on_generation_callback(current_best_solutions.drain(0..1).next().unwrap());
             on_generation(&mut heuristic_ctx, &mut telemetry, termination.as_ref(), generation_time, is_improved);
         }
 

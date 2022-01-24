@@ -428,7 +428,7 @@ pub fn get_locations_serialized(problem: &Problem) -> Result<String, String> {
 
 /// Gets solution serialized in json.
 pub fn get_solution_serialized(problem: Arc<CoreProblem>, config: Config) -> Result<String, String> {
-    let (solution, cost, metrics) = create_builder_from_config(problem.clone(), &config)
+    let (solution, cost, metrics, intermediate_solutions) = create_builder_from_config(problem.clone(), &config)
         .and_then(|builder| builder.build())
         .map(|config| Solver::new(problem.clone(), config))
         .and_then(|solver| solver.solve())
@@ -444,9 +444,9 @@ pub fn get_solution_serialized(problem: Arc<CoreProblem>, config: Config) -> Res
     let mut buffer = String::new();
     let writer = unsafe { BufWriter::new(buffer.as_mut_vec()) };
     if let Some(metrics) = metrics {
-        (&solution, cost, &metrics).write_pragmatic_json(&problem, writer)?;
+        (&solution, cost, &intermediate_solutions, &metrics).write_pragmatic_json(&problem, writer)?;
     } else {
-        (&solution, cost).write_pragmatic_json(&problem, writer)?;
+        (&solution, cost, &intermediate_solutions).write_pragmatic_json(&problem, writer)?;
     }
 
     Ok(buffer)

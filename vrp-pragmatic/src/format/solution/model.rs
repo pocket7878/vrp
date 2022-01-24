@@ -252,9 +252,23 @@ pub struct Solution {
     pub extras: Option<Extras>,
 }
 
+/// A VRP solution.
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TotalSolution {
+    // best solution.
+    pub solution: Solution,
+
+    // List of intermediate solutions.
+    pub intermediate_solutions: Vec<Solution>,
+}
+
 /// Serializes solution into json format.
-pub fn serialize_solution<W: Write>(writer: BufWriter<W>, solution: &Solution) -> Result<(), Error> {
-    serde_json::to_writer_pretty(writer, solution).map_err(Error::from)
+pub fn serialize_solution<W: Write>(writer: BufWriter<W>, solution: &Solution, intermediate_solutions: &Vec<Solution>) -> Result<(), Error> {
+    serde_json::to_writer_pretty(writer, &TotalSolution {
+        solution: solution.clone(),
+        intermediate_solutions: intermediate_solutions.clone(),
+    }).map_err(Error::from)
 }
 
 /// Deserializes solution from json format.

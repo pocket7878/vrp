@@ -37,9 +37,9 @@ pub trait PragmaticSolution<W: Write> {
     fn write_geo_json(&self, problem: &Problem, writer: BufWriter<W>) -> Result<(), String>;
 }
 
-impl<W: Write> PragmaticSolution<W> for (&Solution, f64) {
+impl<W: Write> PragmaticSolution<W> for (&Solution, f64, &Vec<Solution>) {
     fn write_pragmatic_json(&self, problem: &Problem, writer: BufWriter<W>) -> Result<(), String> {
-        write_pragmatic_json(problem, self.0, None, writer)
+        write_pragmatic_json(problem, self.0, None, self.2, writer)
     }
 
     fn write_geo_json(&self, problem: &Problem, writer: BufWriter<W>) -> Result<(), String> {
@@ -47,9 +47,9 @@ impl<W: Write> PragmaticSolution<W> for (&Solution, f64) {
     }
 }
 
-impl<W: Write> PragmaticSolution<W> for (&Solution, f64, &TelemetryMetrics) {
+impl<W: Write> PragmaticSolution<W> for (&Solution, f64, &Vec<Solution>, &TelemetryMetrics) {
     fn write_pragmatic_json(&self, problem: &Problem, writer: BufWriter<W>) -> Result<(), String> {
-        write_pragmatic_json(problem, self.0, Some(self.2), writer)
+        write_pragmatic_json(problem, self.0, Some(self.3), self.2, writer)
     }
 
     fn write_geo_json(&self, problem: &Problem, writer: BufWriter<W>) -> Result<(), String> {
@@ -61,10 +61,15 @@ fn write_pragmatic_json<W: Write>(
     problem: &Problem,
     solution: &Solution,
     metrics: Option<&TelemetryMetrics>,
+    intermediate_solutions: &Vec<Solution>,
     writer: BufWriter<W>,
 ) -> Result<(), String> {
     let solution = create_solution(problem, solution, metrics);
-    serialize_solution(writer, &solution).map_err(|err| err.to_string())?;
+    let intermediate_solutions: Vec<ApiSolution> = intermediate_solutions
+        .iter()
+        .map(|s| create_solution(problem, s, metrics))
+        .collect();
+    serialize_solution(writer, &solution, &intermediate_solutions).map_err(|err| err.to_string())?;
     Ok(())
 }
 

@@ -53,6 +53,7 @@ struct SolutionWriter(
             &Problem,
             Solution,
             f64,
+            Vec<Solution>,
             Option<TelemetryMetrics>,
             BufWriter<Box<dyn Write>>,
             Option<BufWriter<Box<dyn Write>>>,
@@ -84,7 +85,7 @@ fn add_scientific(formats: &mut FormatMap, matches: &ArgMatches, random: Arc<dyn
                 InitSolutionReader(Box::new(move |file, problem| {
                     read_init_solomon(BufReader::new(file), problem, random.clone())
                 })),
-                SolutionWriter(Box::new(|_, solution, cost, _, writer, _| (&solution, cost).write_solomon(writer))),
+                SolutionWriter(Box::new(|_, solution, cost, _, _, writer, _| (&solution, cost).write_solomon(writer))),
                 LocationWriter(Box::new(|_, _| unimplemented!())),
             ),
         );
@@ -96,7 +97,7 @@ fn add_scientific(formats: &mut FormatMap, matches: &ArgMatches, random: Arc<dyn
                     BufReader::new(problem).read_lilim(is_rounded)
                 })),
                 InitSolutionReader(Box::new(|_file, _problem| unimplemented!())),
-                SolutionWriter(Box::new(|_, solution, cost, _, writer, _| (&solution, cost).write_lilim(writer))),
+                SolutionWriter(Box::new(|_, solution, cost, _, _, writer, _| (&solution, cost).write_lilim(writer))),
                 LocationWriter(Box::new(|_, _| unimplemented!())),
             ),
         );
@@ -108,7 +109,7 @@ fn add_scientific(formats: &mut FormatMap, matches: &ArgMatches, random: Arc<dyn
                     BufReader::new(problem).read_tsplib(is_rounded)
                 })),
                 InitSolutionReader(Box::new(|_file, _problem| unimplemented!())),
-                SolutionWriter(Box::new(|_, solution, cost, _, writer, _| (&solution, cost).write_tsplib(writer))),
+                SolutionWriter(Box::new(|_, solution, cost, _, _, writer, _| (&solution, cost).write_tsplib(writer))),
                 LocationWriter(Box::new(|_, _| unimplemented!())),
             ),
         );
@@ -135,14 +136,14 @@ fn add_pragmatic(formats: &mut FormatMap, random: Arc<dyn Random + Send + Sync>)
             InitSolutionReader(Box::new(move |file, problem| {
                 read_init_pragmatic(BufReader::new(file), problem, random.clone())
             })),
-            SolutionWriter(Box::new(|problem, solution, cost, metrics, default_writer, geojson_writer| {
+            SolutionWriter(Box::new(|problem, solution, cost, intermediate_solutions, metrics, default_writer, geojson_writer| {
                 geojson_writer
-                    .map_or(Ok(()), |geojson_writer| (&solution, cost).write_geo_json(problem, geojson_writer))
+                    .map_or(Ok(()), |geojson_writer| (&solution, cost, &intermediate_solutions).write_geo_json(problem, geojson_writer))
                     .and_then(|_| {
                         if let Some(metrics) = metrics {
-                            (&solution, cost, &metrics).write_pragmatic_json(problem, default_writer)
+                            (&solution, cost, &intermediate_solutions, &metrics).write_pragmatic_json(problem, default_writer)
                         } else {
-                            (&solution, cost).write_pragmatic_json(problem, default_writer)
+                            (&solution, cost, &intermediate_solutions).write_pragmatic_json(problem, default_writer)
                         }
                     })
             })),
@@ -402,10 +403,10 @@ pub fn run_solve(
                             Solver::new(problem.clone(), config)
                         };
 
-                        let (solution, cost, metrics) =
+                        let (solution, cost, metrics, intermediate_solutions) =
                             solver.solve().map_err(|err| format!("cannot find any solution: '{}'", err))?;
 
-                        solution_writer.0(&problem, solution, cost, metrics, out_buffer, geo_buffer).unwrap();
+                        solution_writer.0(&problem, solution, cost, intermediate_solutions, metrics, out_buffer, geo_buffer).unwrap();
 
                         if is_check_requested {
                             check_pragmatic_solution_with_args(matches)?;

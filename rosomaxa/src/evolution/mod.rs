@@ -32,6 +32,7 @@ pub trait EvolutionStrategy {
         >,
         termination: Box<dyn Termination<Context = Self::Context, Objective = Self::Objective>>,
         telemetry: Telemetry<Self::Context, Self::Objective, Self::Solution>,
+        on_generation_callback: &mut dyn FnMut(Self::Solution),
     ) -> EvolutionResult<Self::Solution>;
 }
 
