@@ -1,4 +1,5 @@
 use super::*;
+use crate::helpers::models::solution::{create_empty_route_ctx, test_actor_with_profile};
 
 fn create_matrix_data(
     profile: Profile,
@@ -70,8 +71,11 @@ fn can_return_error_when_mixing_timestamps() {
 
 #[test]
 fn can_interpolate_durations() {
-    let p0 = Profile::default();
-    let p1 = Profile::new(1, None);
+    let route0 = Route { actor: test_actor_with_profile(0), tour: Default::default() };
+    let route1 = Route { actor: test_actor_with_profile(1), tour: Default::default() };
+    let p0 = route0.actor.vehicle.profile.clone();
+    let p1 = route1.actor.vehicle.profile.clone();
+
     let costs = TimeAwareMatrixTransportCost::new(
         vec![
             create_matrix_data(p0.clone(), Some(0.), (100., 2), (1., 2)),
@@ -84,15 +88,55 @@ fn can_interpolate_durations() {
     .unwrap();
 
     for &(timestamp, duration) in &[(0., 100.), (10., 200.), (15., 200.), (3., 130.), (5., 150.), (7., 170.)] {
-        assert_eq!(costs.duration(&p0, 0, 1, timestamp), duration);
+        assert_eq!(costs.duration(&route0, 0, 1, TravelTime::Departure(timestamp)), duration);
     }
 
     for &(timestamp, duration) in &[(0., 300.), (10., 400.), (15., 400.), (3., 330.), (5., 350.), (7., 370.)] {
-        assert_eq!(costs.duration(&p1, 0, 1, timestamp), duration);
+        assert_eq!(costs.duration(&route1, 0, 1, TravelTime::Departure(timestamp)), duration);
     }
 
-    assert_eq!(costs.distance(&p0, 0, 1, 0.), 1.);
-    assert_eq!(costs.distance(&p1, 0, 1, 0.), 5.);
+    assert_eq!(costs.distance(&route0, 0, 1, TravelTime::Departure(0.)), 1.);
+    assert_eq!(costs.distance(&route1, 0, 1, TravelTime::Departure(0.)), 5.);
+
+    assert_eq!(costs.distance_approx(&p0, 0, 1), 1.);
+    assert_eq!(costs.distance_approx(&p1, 0, 1), 5.);
+}
+
+parameterized_test! {can_search_for_reserved_time, (times, tests), {
+    can_search_for_reserved_time_impl(times, tests);
+}}
+
+can_search_for_reserved_time! {
+    case01: (vec![(5., 10.), (20., 30.)],
+        vec![((6., 6.), Some(0)), ((2., 6.), Some(0)), ((10., 11.), None),((2., 5.), None),
+             ((10., 21.), Some(1)), ((25., 27.), Some(1)), ((29., 31.), Some(1)),
+             ((0., 3.), None), ((31., 33.), None)]),
+    case02: (vec![(0., 10.), (5., 15.)], vec![]),
+}
+
+fn can_search_for_reserved_time_impl(times: Vec<(f64, f64)>, tests: Vec<((f64, f64), Option<usize>)>) {
+    let route = create_empty_route_ctx().route;
+    let reserved_times = vec![(
+        route.actor.clone(),
+        times.iter().cloned().map(|(start, end)| TimeSpan::Window(TimeWindow::new(start, end))).collect::<Vec<_>>(),
+    )]
+    .into_iter()
+    .collect();
+
+    let reserved_time_func = create_reserved_times_func(reserved_times);
+
+    if let Some(reserved_time_func) = reserved_time_func.ok() {
+        tests.iter().for_each(|((s, e), expected)| {
+            let interval = TimeWindow::new(*s, *e);
+            let expected = expected.and_then(|idx| times.get(idx)).map(|(s, e)| TimeWindow::new(*s, *e));
+
+            let result = reserved_time_func.deref()(&route, &interval);
+
+            assert_eq!(result, expected);
+        });
+    } else {
+        assert!(tests.is_empty())
+    }
 }
 
 mod objective {

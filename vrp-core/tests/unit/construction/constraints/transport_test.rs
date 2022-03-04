@@ -1,38 +1,42 @@
+use crate::construction::constraints::*;
+use crate::construction::heuristics::*;
+use crate::helpers::models::problem::*;
+use crate::helpers::models::solution::*;
+use crate::models::common::*;
+use crate::models::problem::{VehicleDetail, VehiclePlace};
+use std::sync::Arc;
+
+type VehicleData = (Location, Location, Timestamp, Timestamp);
+type ActivityData = (Location, (Timestamp, Timestamp), Duration);
+
+fn create_detail(
+    locations: (Option<Location>, Option<Location>),
+    time: Option<(Timestamp, Timestamp)>,
+) -> VehicleDetail {
+    let (start_location, end_location) = locations;
+    VehicleDetail {
+        start: start_location.map(|location| VehiclePlace {
+            location,
+            time: time.map_or(Default::default(), |(start, _)| TimeInterval { earliest: Some(start), latest: None }),
+        }),
+        end: end_location.map(|location| VehiclePlace {
+            location,
+            time: time.map_or(Default::default(), |(_, end)| TimeInterval { earliest: None, latest: Some(end) }),
+        }),
+    }
+}
+
 mod timing {
     use super::super::{try_advance_departure_time, try_recede_departure_time};
-    use crate::construction::constraints::*;
-    use crate::construction::heuristics::*;
+    use super::*;
     use crate::helpers::construction::constraints::create_constraint_pipeline_with_transport;
     use crate::helpers::models::domain::{create_empty_solution_context, test_random};
-    use crate::helpers::models::problem::*;
-    use crate::helpers::models::solution::*;
-    use crate::models::common::{Location, Schedule, TimeInterval, TimeWindow, Timestamp};
-    use crate::models::problem::{Vehicle, VehicleDetail, VehiclePlace};
+    use crate::models::problem::Vehicle;
     use crate::models::solution::{Activity, Place, Registry};
     use rosomaxa::prelude::compare_floats;
     use std::cmp::Ordering;
 
-    fn create_detail(
-        locations: (Option<Location>, Option<Location>),
-        time: Option<(Timestamp, Timestamp)>,
-    ) -> VehicleDetail {
-        let (start_location, end_location) = locations;
-        VehicleDetail {
-            start: start_location.map(|location| VehiclePlace {
-                location,
-                time: time
-                    .map_or(Default::default(), |(start, _)| TimeInterval { earliest: Some(start), latest: None }),
-            }),
-            end: end_location.map(|location| VehiclePlace {
-                location,
-                time: time.map_or(Default::default(), |(_, end)| TimeInterval { earliest: None, latest: Some(end) }),
-            }),
-        }
-    }
-
-    fn create_constraint_pipeline_and_route(
-        vehicle_detail_data: (Location, Location, Timestamp, Timestamp),
-    ) -> (ConstraintPipeline, RouteContext) {
+    fn create_constraint_pipeline_and_route(vehicle_detail_data: VehicleData) -> (ConstraintPipeline, RouteContext) {
         let (location_start, location_end, time_start, time_end) = vehicle_detail_data;
 
         let fleet = FleetBuilder::default()
@@ -69,11 +73,7 @@ mod timing {
         case09: ((40, 40, 0., 100.), 2, 80.),
     }
 
-    fn can_properly_calculate_latest_arrival_impl(
-        vehicle_detail_data: (Location, Location, Timestamp, Timestamp),
-        activity: usize,
-        time: f64,
-    ) {
+    fn can_properly_calculate_latest_arrival_impl(vehicle_detail_data: VehicleData, activity: usize, time: f64) {
         let (pipeline, mut route_ctx) = create_constraint_pipeline_and_route(vehicle_detail_data);
 
         pipeline.accept_route_state(&mut route_ctx);
@@ -102,7 +102,7 @@ mod timing {
     }
 
     fn can_detect_activity_constraint_violation_impl(
-        vehicle_detail_data: (Location, Location, Timestamp, Timestamp),
+        vehicle_detail_data: VehicleData,
         location: Location,
         prev_index: usize,
         next_index: usize,
@@ -337,13 +337,8 @@ mod timing {
 
 mod traveling {
     use super::super::stop;
-    use crate::construction::constraints::*;
-    use crate::construction::heuristics::{ActivityContext, RouteContext, RouteState};
+    use super::*;
     use crate::helpers::construction::constraints::create_constraint_pipeline_with_module;
-    use crate::helpers::models::problem::*;
-    use crate::helpers::models::solution::*;
-    use crate::models::common::{Distance, Duration, Location, TimeWindow};
-    use std::sync::Arc;
 
     fn create_test_data(
         vehicle: &str,
@@ -430,5 +425,201 @@ mod traveling {
         );
 
         assert_eq!(result, stop(3));
+    }
+}
+
+mod time_dependent {
+    use super::*;
+    use crate::helpers::construction::constraints::create_constraint_pipeline_with_module;
+    use crate::models::problem::{DynamicActivityCost, DynamicTransportCost};
+    use hashbrown::HashMap;
+
+    fn create_constraint_pipeline_and_route(
+        vehicle_detail_data: VehicleData,
+        activities: Vec<ActivityData>,
+        reserved_time: TimeWindow,
+    ) -> (ConstraintPipeline, RouteContext) {
+        let (location_start, location_end, time_start, time_end) = vehicle_detail_data;
+
+        let activities = activities
+            .into_iter()
+            .map(|(loc, (start, end), dur)| {
+                test_activity_with_location_tw_and_duration(loc, TimeWindow::new(start, end), dur)
+            })
+            .collect();
+
+        let fleet = FleetBuilder::default()
+            .add_driver(test_driver())
+            .add_vehicles(vec![VehicleBuilder::default()
+                .id("v1")
+                .details(vec![create_detail((Some(location_start), Some(location_end)), Some((time_start, time_end)))])
+                .build()])
+            .build();
+        let reserved_times = fleet
+            .actors
+            .first()
+            .map(|actor| {
+                vec![(actor.clone(), vec![TimeSpan::Window(reserved_time)])].into_iter().collect::<HashMap<_, _>>()
+            })
+            .unwrap();
+        let route_ctx = create_route_context_with_activities(&fleet, "v1", activities);
+
+        let pipeline = create_constraint_pipeline_with_module(Arc::new(TransportConstraintModule::new(
+            Arc::new(
+                DynamicTransportCost::new(reserved_times.clone(), Arc::new(TestTransportCost::default())).unwrap(),
+            ),
+            Arc::new(DynamicActivityCost::new(reserved_times).unwrap()),
+            Arc::new(|_| (None, None)),
+            1,
+            2,
+            3,
+        )));
+
+        (pipeline, route_ctx)
+    }
+
+    fn get_activity_states(route_ctx: &RouteContext, key: i32) -> Vec<Option<f64>> {
+        route_ctx
+            .route
+            .tour
+            .all_activities()
+            .map(|a| route_ctx.state.get_activity_state::<f64>(key, a).cloned())
+            .collect()
+    }
+
+    fn get_schedules(route_ctx: &RouteContext) -> Vec<(Timestamp, Timestamp)> {
+        route_ctx.route.tour.all_activities().map(|a| (a.schedule.arrival, a.schedule.departure)).collect()
+    }
+
+    parameterized_test! {can_update_state_for_reserved_time, (vehicle_detail_data, reserved_time, activities, late_arrival_expected, expected_schedules), {
+        let reserved_time =  TimeWindow::new(reserved_time.0, reserved_time.1);
+        can_update_state_for_reserved_time_impl(vehicle_detail_data, reserved_time, activities, late_arrival_expected, expected_schedules);
+    }}
+
+    can_update_state_for_reserved_time! {
+        case01_single_outside: ((0, 0, 0., 100.), (25., 30.),
+                  vec![(10, (0., 100.), 10.)],
+                  vec![None, Some(80.), None],
+                  vec![(0., 0.), (10., 20.), (35., 35.)]),
+
+        case02_single_inside: ((0, 0, 0., 100.), (25., 30.),
+                  vec![(20, (0., 25.), 10.)],
+                  vec![None, Some(20.), None],
+                  vec![(0., 0.), (20., 35.), (55., 55.)]),
+
+        case03_two_inside_travel: ((0, 0, 0., 100.), (25., 30.),
+                  vec![(10, (0., 20.), 10.), (20, (0., 40.), 10.)],
+                  vec![None, Some(15.), Some(40.), None],
+                  vec![(0., 0.), (10., 20.), (35., 45.), (65., 65.)]),
+
+        case04_two_inside_service: ((0, 0, 0., 100.), (35., 40.),
+                  vec![(10, (0., 20.), 10.), (20, (0., 50.), 10.)],
+                  vec![None, Some(15.), Some(50.), None],
+                  vec![(0., 0.), (10., 20.), (30., 45.), (65., 65.)]),
+    }
+
+    fn can_update_state_for_reserved_time_impl(
+        vehicle_detail_data: VehicleData,
+        reserved_time: TimeWindow,
+        activities: Vec<ActivityData>,
+        late_arrival_expected: Vec<Option<f64>>,
+        expected_schedules: Vec<(Timestamp, Timestamp)>,
+    ) {
+        let (pipeline, mut route_ctx) =
+            create_constraint_pipeline_and_route(vehicle_detail_data, activities, reserved_time);
+        pipeline.accept_route_state(&mut route_ctx);
+
+        let schedules = get_schedules(&route_ctx);
+        let late_arrival_result = get_activity_states(&route_ctx, LATEST_ARRIVAL_KEY);
+
+        assert_eq!(schedules, expected_schedules);
+        assert_eq!(late_arrival_result, late_arrival_expected);
+    }
+
+    parameterized_test! {can_evaluate_activity, (vehicle_detail_data, reserved_time, target, activities, expected_schedules), {
+        let reserved_time =  TimeWindow::new(reserved_time.0, reserved_time.1);
+        can_evaluate_activity_impl(vehicle_detail_data, reserved_time, target, activities, expected_schedules);
+    }}
+
+    can_evaluate_activity! {
+        case01_break_starts_at_target_then_next_at_end:
+            ((0, 0, 0., 100.), (10., 20.),
+            (10, (0., 100.), 10.),
+            vec![(20, (0., 40.), 10.)],
+            vec![(0., 0.), (10., 30.), (40., 50.), (70., 70.)]),
+
+        case02_break_starts_at_target_then_next_is_late:
+            ((0, 0, 0., 100.), (10., 20.),
+            (10, (0., 100.), 10.),
+            vec![(20, (0., 39.), 10.)],
+            vec![]),
+
+        case03_break_with_waiting_time:
+            ((0, 0, 0., 100.), (10., 20.),
+            (10, (20., 100.), 10.),
+            vec![(20, (0., 100.), 10.)],
+            vec![(0., 0.), (10., 30.), (40., 50.), (70., 70.)]),
+
+        case04_break_during_traveling:
+            ((0, 0, 0., 100.), (5., 10.),
+            (10, (0., 100.), 10.),
+            vec![(20, (0., 100.), 10.)],
+            vec![(0., 0.), (15., 25.), (35., 45.), (65., 65.)]),
+
+        case05_break_on_whole_time_window_exclusive:
+            ((0, 0, 0., 100.), (10., 20.),
+            (10, (0., 20.), 10.),
+            vec![(20, (0., 100.), 10.)],
+            vec![(0., 0.), (10., 30.), (40., 50.), (70., 70.)]),
+
+        case06_break_on_whole_time_window_inclusive:
+            ((0, 0, 0., 100.), (10., 21.),
+            (10, (0., 20.), 10.),
+            vec![(20, (0., 100.), 10.)],
+            vec![]),
+
+        case07_break_on_whole_time_window_inclusive:
+            ((0, 0, 0., 100.), (9., 21.),
+            (10, (10., 20.), 10.),
+            vec![(20, (0., 100.), 10.)],
+            vec![]),
+
+        case08_break_constraints_next:
+            ((0, 0, 0., 100.), (50., 60.),
+            (30, (0., 100.), 10.),
+            vec![(20, (0., 50.), 10.)],
+            vec![]),
+
+        case09_break_constraints_next:
+            ((0, 0, 0., 100.), (45., 60.),
+            (30, (0., 100.), 10.),
+            vec![(20, (0., 50.), 10.)],
+            vec![]),
+    }
+
+    fn can_evaluate_activity_impl(
+        vehicle_detail_data: VehicleData,
+        reserved_time: TimeWindow,
+        target: ActivityData,
+        activities: Vec<ActivityData>,
+        expected_schedules: Vec<(Timestamp, Timestamp)>,
+    ) {
+        let (pipeline, mut route_ctx) =
+            create_constraint_pipeline_and_route(vehicle_detail_data, activities, reserved_time);
+        pipeline.accept_route_state(&mut route_ctx);
+        let (loc, (start, end), dur) = target;
+        let prev = route_ctx.route.tour.get(0).unwrap();
+        let target = test_activity_with_location_tw_and_duration(loc, TimeWindow::new(start, end), dur);
+        let next = route_ctx.route.tour.get(1);
+        let activity_ctx = ActivityContext { index: 1, prev, target: &target, next };
+
+        let is_violation = pipeline.evaluate_hard_activity(&route_ctx, &activity_ctx).is_some();
+
+        assert_eq!(is_violation, expected_schedules.is_empty());
+        if !is_violation {
+            route_ctx.route_mut().tour.insert_at(target, 1);
+            pipeline.accept_route_state(&mut route_ctx);
+            assert_eq!(get_schedules(&route_ctx), expected_schedules)
+        }
     }
 }

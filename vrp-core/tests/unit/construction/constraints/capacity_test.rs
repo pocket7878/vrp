@@ -164,7 +164,11 @@ fn can_merge_jobs_with_demand_impl(
     } else {
         Arc::new(test_single())
     });
-    let constraint = CapacityConstraintModule::<SingleDimLoad>::new(TestTransportCost::new_shared(), 2);
+    let constraint = CapacityConstraintModule::<SingleDimLoad>::new(
+        TestActivityCost::new_shared(),
+        TestTransportCost::new_shared(),
+        2,
+    );
 
     let result: Result<Demand<SingleDimLoad>, i32> =
         constraint.merge(cluster, candidate).and_then(|job| job.dimens().get_demand().cloned().ok_or(-1));
@@ -176,8 +180,8 @@ fn can_merge_jobs_with_demand_impl(
             assert_eq!(result.delivery.0, SingleDimLoad::new(delivery0));
             assert_eq!(result.delivery.1, SingleDimLoad::new(delivery1));
         }
-        (Ok(_), Err(err)) => unreachable!(format!("unexpected ok, when err '{}' expected", err)),
-        (Err(err), Ok(_)) => unreachable!(format!("unexpected err: '{}'", err)),
+        (Ok(_), Err(err)) => unreachable!("unexpected ok, when err '{}' expected", err),
+        (Err(err), Ok(_)) => unreachable!("unexpected err: '{}'", err),
         (Err(result), Err(expected)) => assert_eq!(result, expected),
     }
 }

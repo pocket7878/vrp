@@ -5,7 +5,7 @@ mod metrics_test;
 use super::InsertionContext;
 use crate::construction::constraints::{MAX_LOAD_KEY, TOTAL_DISTANCE_KEY, TOTAL_DURATION_KEY, WAITING_KEY};
 use crate::construction::heuristics::RouteContext;
-use crate::models::problem::TransportCost;
+use crate::models::problem::{TransportCost, TravelTime};
 use rosomaxa::algorithms::math::*;
 use rosomaxa::prelude::compare_floats;
 use std::cmp::Ordering;
@@ -54,10 +54,10 @@ pub fn get_longest_distance_between_customers_mean(insertion_ctx: &InsertionCont
             [_] => acc,
             [prev, next] => transport
                 .distance(
-                    &route_ctx.route.actor.vehicle.profile,
+                    &route_ctx.route,
                     prev.place.location,
                     next.place.location,
-                    prev.schedule.departure,
+                    TravelTime::Departure(prev.schedule.departure),
                 )
                 .max(acc),
             _ => panic!("Unexpected route leg configuration."),
@@ -74,10 +74,10 @@ pub fn get_average_distance_between_depot_customer_mean(insertion_ctx: &Insertio
 
         get_mean_iter(route_ctx.route.tour.all_activities().skip(1).map(|activity| {
             transport.distance(
-                &route_ctx.route.actor.vehicle.profile,
+                &route_ctx.route,
                 depot.place.location,
                 activity.place.location,
-                depot.schedule.departure,
+                TravelTime::Departure(depot.schedule.departure),
             )
         }))
     }))
@@ -97,10 +97,10 @@ pub fn get_longest_distance_between_depot_customer_mean(insertion_ctx: &Insertio
             .skip(1)
             .map(|activity| {
                 transport.distance(
-                    &route_ctx.route.actor.vehicle.profile,
+                    &route_ctx.route,
                     depot.place.location,
                     activity.place.location,
-                    depot.schedule.departure,
+                    TravelTime::Departure(depot.schedule.departure),
                 )
             })
             .max_by(|a, b| compare_floats(*a, *b))
@@ -125,7 +125,7 @@ pub fn get_distance_gravity_mean(insertion_ctx: &InsertionContext) -> f64 {
 
         for i in 0..medoids.len() {
             for j in (i + 1)..medoids.len() {
-                let distance = transport.distance(profile, medoids[i], medoids[j], Default::default());
+                let distance = transport.distance_approx(profile, medoids[i], medoids[j]);
                 // NOTE assume that negative distance is used between unroutable locations
                 distances.push(distance.max(0.));
             }
@@ -139,20 +139,14 @@ pub fn get_distance_gravity_mean(insertion_ctx: &InsertionContext) -> f64 {
 
 /// Gets medoid location of given route context.
 pub fn get_medoid(route_ctx: &RouteContext, transport: &(dyn TransportCost + Send + Sync)) -> Option<usize> {
+    let profile = &route_ctx.route.actor.vehicle.profile;
     let locations = route_ctx.route.tour.all_activities().map(|activity| activity.place.location).collect::<Vec<_>>();
     locations
         .iter()
         .map(|outer_loc| {
             let sum = locations
                 .iter()
-                .map(|inner_loc| {
-                    transport.distance(
-                        &route_ctx.route.actor.vehicle.profile,
-                        *outer_loc,
-                        *inner_loc,
-                        Default::default(),
-                    )
-                })
+                .map(|inner_loc| transport.distance_approx(profile, *outer_loc, *inner_loc))
                 .sum::<f64>();
             (sum, *outer_loc)
         })
@@ -186,8 +180,7 @@ pub fn group_routes_by_proximity(insertion_ctx: &InsertionContext) -> RouteProxi
                     .map(move |(inner_idx, inner_medoid)| {
                         let distance = match (outer_medoid, inner_medoid) {
                             (Some(outer_medoid), Some(inner_medoid)) => {
-                                let distance =
-                                    transport.distance(profile, *outer_medoid, *inner_medoid, Default::default());
+                                let distance = transport.distance_approx(profile, *outer_medoid, *inner_medoid);
                                 if distance < 0. {
                                     None
                                 } else {

@@ -94,9 +94,9 @@ mod single {
                             location: vec![0., 0.].to_loc(),
                         }),
                         dispatch: None,
-                        breaks: Some(vec![VehicleBreak {
-                            time: VehicleBreakTime::TimeWindow(vec![format_time(0.), format_time(1000.)]),
-                            places: vec![VehicleBreakPlace { duration: 2.0, location: None, tag: None }],
+                        breaks: Some(vec![VehicleBreak::Optional {
+                            time: VehicleOptionalBreakTime::TimeWindow(vec![format_time(0.), format_time(1000.)]),
+                            places: vec![VehicleOptionalBreakPlace { duration: 2.0, location: None, tag: None }],
                             policy: None,
                         }]),
                         reloads: Some(vec![VehicleReload {
@@ -143,7 +143,7 @@ mod single {
                             ("1970-01-01T00:00:01Z", "1970-01-01T00:00:02Z"),
                             1,
                         ),
-                        Stop {
+                        Stop::Point(PointStop {
                             location: vec![2., 0.].to_loc(),
                             time: Schedule {
                                 arrival: "1970-01-01T00:00:03Z".to_string(),
@@ -170,7 +170,7 @@ mod single {
                                     commute: None,
                                 },
                             ],
-                        },
+                        }),
                         create_stop_with_activity(
                             "job3",
                             "pickup",

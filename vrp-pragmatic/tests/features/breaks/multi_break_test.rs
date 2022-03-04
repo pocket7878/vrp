@@ -19,18 +19,18 @@ fn can_use_two_breaks() {
                         location: vec![0., 0.].to_loc(),
                     },
                     breaks: Some(vec![
-                        VehicleBreak {
-                            time: VehicleBreakTime::TimeWindow(vec![format_time(5.), format_time(10.)]),
-                            places: vec![VehicleBreakPlace {
+                        VehicleBreak::Optional {
+                            time: VehicleOptionalBreakTime::TimeWindow(vec![format_time(5.), format_time(10.)]),
+                            places: vec![VehicleOptionalBreakPlace {
                                 duration: 2.0,
                                 location: Some(vec![6., 0.].to_loc()),
                                 tag: None,
                             }],
                             policy: None,
                         },
-                        VehicleBreak {
-                            time: VehicleBreakTime::TimeWindow(vec![format_time(100.), format_time(120.)]),
-                            places: vec![VehicleBreakPlace { duration: 2.0, location: None, tag: None }],
+                        VehicleBreak::Optional {
+                            time: VehicleOptionalBreakTime::TimeWindow(vec![format_time(100.), format_time(120.)]),
+                            places: vec![VehicleOptionalBreakPlace { duration: 2.0, location: None, tag: None }],
                             policy: None,
                         },
                     ]),
@@ -84,7 +84,7 @@ fn can_use_two_breaks() {
                         ("1970-01-01T00:00:07Z", "1970-01-01T00:00:09Z"),
                         6,
                     ),
-                    Stop {
+                    Stop::Point(PointStop {
                         location: vec![99., 0.].to_loc(),
                         time: Schedule {
                             arrival: "1970-01-01T00:01:42Z".to_string(),
@@ -117,7 +117,7 @@ fn can_use_two_breaks() {
                                 commute: None
                             }
                         ],
-                    },
+                    }),
                     create_stop_with_activity(
                         "arrival",
                         "arrival",

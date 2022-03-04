@@ -63,37 +63,8 @@ fn check_e1503_no_matrix_when_indices_used(
     }
 }
 
-/// Checks that area limit constraint is not used with location indices.
-fn check_e1504_limit_areas_cannot_be_used_with_indices(
-    ctx: &ValidationContext,
-    location_types: (bool, bool),
-) -> Result<(), FormatError> {
-    let (_, has_indices) = location_types;
-
-    if has_indices {
-        let has_areas = ctx
-            .problem
-            .fleet
-            .vehicles
-            .iter()
-            .filter_map(|vehicle| vehicle.limits.as_ref())
-            .filter_map(|limits| limits.allowed_areas.as_ref())
-            .next()
-            .is_some();
-        if has_areas {
-            return Err(FormatError::new(
-                "E1504".to_string(),
-                "area limit constraint requires coordinates to be used everywhere".to_string(),
-                "either use coordinates everywhere or remove area limits".to_string(),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 /// Checks that coord index has a proper maximum index for
-fn check_e1505_index_size_mismatch(ctx: &ValidationContext) -> Result<(), FormatError> {
+fn check_e1504_index_size_mismatch(ctx: &ValidationContext) -> Result<(), FormatError> {
     let (max_index, matrix_size, is_correct_index): _ = ctx
         .coord_index
         .max_index()
@@ -110,7 +81,7 @@ fn check_e1505_index_size_mismatch(ctx: &ValidationContext) -> Result<(), Format
 
     if !is_correct_index {
         Err(FormatError::new(
-            "E1505".to_string(),
+            "E1504".to_string(),
             "amount of locations does not match matrix dimension".to_string(),
             format!(
                 "check matrix size: max location index '{}' + 1 should be equal to matrix size ('{}')",
@@ -123,7 +94,7 @@ fn check_e1505_index_size_mismatch(ctx: &ValidationContext) -> Result<(), Format
 }
 
 /// Checks that no duplicated profile names specified.
-fn check_e1506_profiles_exist(ctx: &ValidationContext) -> Result<(), FormatError> {
+fn check_e1505_profiles_exist(ctx: &ValidationContext) -> Result<(), FormatError> {
     let known_matrix_profiles = ctx.problem.fleet.profiles.iter().map(|p| p.name.clone()).collect::<HashSet<_>>();
 
     let unknown_vehicle_profiles = ctx
@@ -143,7 +114,7 @@ fn check_e1506_profiles_exist(ctx: &ValidationContext) -> Result<(), FormatError
     } else {
         let unknown_profiles = unknown_vehicle_profiles.into_iter().collect::<Vec<_>>();
         Err(FormatError::new(
-            "E1506".to_string(),
+            "E1505".to_string(),
             "unknown matrix profile name in vehicle or vicinity clustering profile".to_string(),
             format!("ensure that matrix profiles '{}' are defined in profiles", unknown_profiles.join(", ")),
         ))
@@ -159,8 +130,7 @@ pub fn validate_routing(ctx: &ValidationContext) -> Result<(), Vec<FormatError>>
         check_e1501_empty_profiles(ctx),
         check_e1502_no_location_type_mix(ctx, location_types),
         check_e1503_no_matrix_when_indices_used(ctx, location_types),
-        check_e1504_limit_areas_cannot_be_used_with_indices(ctx, location_types),
-        check_e1505_index_size_mismatch(ctx),
-        check_e1506_profiles_exist(ctx),
+        check_e1504_index_size_mismatch(ctx),
+        check_e1505_profiles_exist(ctx),
     ])
 }

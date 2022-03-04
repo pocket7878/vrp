@@ -2,7 +2,7 @@
 #[path = "../../../tests/unit/format/solution/initial_reader_test.rs"]
 mod initial_reader_test;
 
-use crate::format::solution::activity_matcher::{try_match_job, JobInfo};
+use crate::format::solution::activity_matcher::{try_match_point_job, JobInfo};
 use crate::format::solution::Activity as FormatActivity;
 use crate::format::solution::Stop as FormatStop;
 use crate::format::solution::Tour as FormatTour;
@@ -46,7 +46,7 @@ pub fn read_init_solution<R: Read>(
             let mut core_route = create_core_route(actor, tour)?;
 
             tour.stops.iter().try_for_each(|stop| {
-                stop.activities.iter().try_for_each::<_, Result<_, String>>(|activity| {
+                stop.activities().iter().try_for_each::<_, Result<_, String>>(|activity| {
                     try_insert_activity(&mut core_route, tour, stop, activity, job_index, coord_index, &mut added_jobs)
                 })
             })?;
@@ -94,7 +94,13 @@ fn try_insert_activity(
         return Err("commute property in initial solution is not supported".to_string());
     }
 
-    if let Some(JobInfo(job, single, place, time)) = try_match_job(tour, stop, activity, job_index, coord_index)? {
+    let stop = match stop {
+        FormatStop::Transit(_) => return Err("transit property in initial solution is not yet supported".to_string()),
+        FormatStop::Point(stop) => stop,
+    };
+
+    if let Some(JobInfo(job, single, place, time)) = try_match_point_job(tour, stop, activity, job_index, coord_index)?
+    {
         added_jobs.insert(job);
         insert_new_activity(route, single, place, time);
     } else if activity.activity_type != "departure" && activity.activity_type != "arrival" {
@@ -122,7 +128,7 @@ fn create_core_route(actor: Arc<Actor>, format_tour: &FormatTour) -> Result<Rout
                              format_activity: &FormatActivity,
                              core_activity: &mut Activity|
      -> Result<(), String> {
-        let time = &format_stop.time;
+        let time = &format_stop.schedule();
         let (arrival, departure) = format_activity
             .time
             .as_ref()
@@ -135,14 +141,14 @@ fn create_core_route(actor: Arc<Actor>, format_tour: &FormatTour) -> Result<Rout
     };
 
     let start_stop = format_tour.stops.first().ok_or_else(|| "empty tour in init solution".to_string())?;
-    let start_activity = start_stop.activities.first().ok_or_else(|| "start stop has no activities".to_string())?;
+    let start_activity = start_stop.activities().first().ok_or_else(|| "start stop has no activities".to_string())?;
     let core_start = core_tour.all_activities_mut().next().expect("cannot get start activity from core tour");
 
     set_activity_time(start_stop, start_activity, core_start)?;
 
     if core_tour.end().is_some() {
         let end_stop = format_tour.stops.last().unwrap();
-        let end_activity = end_stop.activities.first().ok_or_else(|| "end stop has no activities".to_string())?;
+        let end_activity = end_stop.activities().first().ok_or_else(|| "end stop has no activities".to_string())?;
         let core_end = core_tour.all_activities_mut().last().unwrap();
 
         set_activity_time(end_stop, end_activity, core_end)?;

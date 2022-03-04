@@ -267,8 +267,8 @@ fn analyze_insertion_in_route_leg(
             let other_costs = in2.cost.unwrap_or(f64::MAX);
 
             match eval_ctx.result_selector.select_cost(route_ctx, costs, other_costs) {
-                Either::Left => SingleContext::success(activity_ctx.index, costs, target.place.clone()),
-                Either::Right => SingleContext::skip(in2),
+                Either::Left(_) => SingleContext::success(activity_ctx.index, costs, target.place.clone()),
+                Either::Right(_) => SingleContext::skip(in2),
             }
         })
     })
@@ -470,7 +470,7 @@ fn concat_activities(
     activities: Option<Vec<(Activity, usize)>>,
     activity: (Activity, usize),
 ) -> Vec<(Activity, usize)> {
-    let mut activities = activities.unwrap_or_else(Vec::new);
+    let mut activities = activities.unwrap_or_default();
     activities.push((activity.0, activity.1));
 
     activities

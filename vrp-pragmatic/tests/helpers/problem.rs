@@ -1,3 +1,6 @@
+use crate::core::models::common::{Distance, Duration};
+use crate::core::models::problem::TravelTime;
+use crate::core::models::solution::Route;
 use crate::format::problem::Objective::{MinimizeCost, MinimizeUnassignedJobs};
 use crate::format::problem::*;
 use crate::format::{CoordIndex, Location};
@@ -266,7 +269,7 @@ pub fn create_min_jobs_cost_objective() -> Option<Vec<Vec<Objective>>> {
 }
 
 pub fn create_empty_plan() -> Plan {
-    Plan { jobs: vec![], relations: None, clustering: None }
+    Plan { jobs: vec![], relations: None, areas: None, clustering: None }
 }
 
 pub fn create_empty_problem() -> Problem {
@@ -277,11 +280,19 @@ pub fn get_costs() -> (Arc<dyn TransportCost + Send + Sync>, Arc<dyn ActivityCos
     struct ExampleTransportCost {}
 
     impl TransportCost for ExampleTransportCost {
-        fn duration(&self, _: &CoreProfile, _: usize, _: usize, _: f64) -> f64 {
+        fn duration_approx(&self, _: &CoreProfile, _: usize, _: usize) -> Duration {
             42.
         }
 
-        fn distance(&self, _: &CoreProfile, _: usize, _: usize, _: f64) -> f64 {
+        fn distance_approx(&self, _: &CoreProfile, _: usize, _: usize) -> Distance {
+            42.
+        }
+
+        fn duration(&self, _: &Route, _: usize, _: usize, _: TravelTime) -> Duration {
+            42.
+        }
+
+        fn distance(&self, _: &Route, _: usize, _: usize, _: TravelTime) -> Distance {
             42.
         }
     }

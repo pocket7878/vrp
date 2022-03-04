@@ -188,7 +188,7 @@ fn read_conditional_jobs(
             }
 
             if let Some(breaks) = &shift.breaks {
-                read_breaks(coord_index, job_index, &mut jobs, vehicle, shift_index, breaks);
+                read_optional_breaks(coord_index, job_index, &mut jobs, vehicle, shift_index, breaks);
             }
 
             if let Some(reloads) = &shift.reloads {
@@ -200,7 +200,7 @@ fn read_conditional_jobs(
     (jobs, vec![])
 }
 
-fn read_breaks(
+fn read_optional_breaks(
     coord_index: &CoordIndex,
     job_index: &mut JobIndex,
     jobs: &mut Vec<Job>,
@@ -209,28 +209,30 @@ fn read_breaks(
     breaks: &[VehicleBreak],
 ) {
     (1..)
-        .zip(breaks.iter())
-        .flat_map(|(break_idx, vehicle_break)| {
+        .zip(breaks.iter().filter_map(|vehicle_break| match vehicle_break {
+            VehicleBreak::Optional { time, places, policy } => Some((time, places, policy)),
+            VehicleBreak::Required { .. } => None,
+        }))
+        .flat_map(|(break_idx, (break_time, break_places, policy))| {
             vehicle
                 .vehicle_ids
                 .iter()
                 .map(|vehicle_id| {
-                    let times = match &vehicle_break.time {
-                        VehicleBreakTime::TimeWindow(time) if time.len() != 2 => {
+                    let times = match &break_time {
+                        VehicleOptionalBreakTime::TimeWindow(time) if time.len() != 2 => {
                             panic!("Break with invalid time window specified: must have start and end!")
                         }
-                        VehicleBreakTime::TimeOffset(offsets) if offsets.len() != 2 => {
+                        VehicleOptionalBreakTime::TimeOffset(offsets) if offsets.len() != 2 => {
                             panic!("Break with invalid offset specified: must have start and end!")
                         }
-                        VehicleBreakTime::TimeWindow(time) => vec![TimeSpan::Window(parse_time_window(time))],
-                        VehicleBreakTime::TimeOffset(offset) => {
+                        VehicleOptionalBreakTime::TimeWindow(time) => vec![TimeSpan::Window(parse_time_window(time))],
+                        VehicleOptionalBreakTime::TimeOffset(offset) => {
                             vec![TimeSpan::Offset(TimeOffset::new(*offset.first().unwrap(), *offset.last().unwrap()))]
                         }
                     };
 
                     let job_id = format!("{}_break_{}_{}", vehicle_id, shift_index, break_idx);
-                    let places = vehicle_break
-                        .places
+                    let places = break_places
                         .iter()
                         .map(|place| (place.location.clone(), place.duration, times.clone(), place.tag.clone()))
                         .collect();
@@ -238,10 +240,10 @@ fn read_breaks(
                     let mut job =
                         get_conditional_job(coord_index, vehicle_id.clone(), &job_id, "break", shift_index, places);
 
-                    if let Some(policy) = &vehicle_break.policy {
+                    if let Some(policy) = policy {
                         let policy = match policy {
-                            VehicleBreakPolicy::SkipIfNoIntersection => BreakPolicy::SkipIfNoIntersection,
-                            VehicleBreakPolicy::SkipIfArrivalBeforeEnd => BreakPolicy::SkipIfArrivalBeforeEnd,
+                            VehicleOptionalBreakPolicy::SkipIfNoIntersection => BreakPolicy::SkipIfNoIntersection,
+                            VehicleOptionalBreakPolicy::SkipIfArrivalBeforeEnd => BreakPolicy::SkipIfArrivalBeforeEnd,
                         };
 
                         job.dimens.set_value("policy", policy);

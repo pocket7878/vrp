@@ -21,7 +21,7 @@ use self::objective_reader::create_objective;
 use crate::constraints::*;
 use crate::extensions::{get_route_modifier, OnlyVehicleActivityCost};
 use crate::format::coord_index::CoordIndex;
-use crate::format::problem::{deserialize_matrix, deserialize_problem, get_job_tasks, Matrix};
+use crate::format::problem::*;
 use crate::format::*;
 use crate::utils::get_approx_transportation;
 use crate::validation::ValidationContext;
@@ -31,13 +31,15 @@ use std::cmp::Ordering::Equal;
 use std::io::{BufReader, Read};
 use std::sync::Arc;
 use vrp_core::construction::constraints::*;
-use vrp_core::models::common::{MultiDimLoad, SingleDimLoad, TimeWindow, ValueDimension};
-use vrp_core::models::problem::{ActivityCost, Fleet, Jobs, TransportCost};
+use vrp_core::models::common::*;
+use vrp_core::models::problem::*;
 use vrp_core::models::{Extras, Lock, Problem};
 use vrp_core::prelude::*;
+use vrp_core::rosomaxa::utils::CollectGroupBy;
 use vrp_core::solver::processing::VicinityDimension;
 
 pub type ApiProblem = crate::format::problem::Problem;
+pub type CoreFleet = vrp_core::models::problem::Fleet;
 
 /// Reads specific problem definition from various sources.
 pub trait PragmaticProblem {
@@ -119,9 +121,9 @@ pub struct ProblemProperties {
     has_order: bool,
     has_group: bool,
     has_compatibility: bool,
-    has_area_limits: bool,
     has_tour_size_limits: bool,
     max_job_value: Option<f64>,
+    max_area_value: Option<f64>,
 }
 
 /// Creates a matrices using approximation.
@@ -181,6 +183,9 @@ fn map_to_problem(
     let problem_props = get_problem_properties(&api_problem, &matrices);
 
     let coord_index = Arc::new(coord_index);
+    let fleet = read_fleet(&api_problem, &problem_props, &coord_index);
+    let reserved_times_index = read_reserved_times_index(&api_problem, &fleet);
+
     let transport = create_transport_costs(&api_problem, &matrices).map_err(|err| {
         vec![FormatError::new(
             "E0002".to_string(),
@@ -188,8 +193,26 @@ fn map_to_problem(
             format!("check matrix routing data: '{}'", err),
         )]
     })?;
-    let activity = Arc::new(OnlyVehicleActivityCost::default());
-    let fleet = read_fleet(&api_problem, &problem_props, &coord_index);
+    let activity: Arc<dyn ActivityCost + Send + Sync> = Arc::new(OnlyVehicleActivityCost::default());
+
+    let (transport, activity) = if reserved_times_index.is_empty() {
+        (transport, activity)
+    } else {
+        DynamicTransportCost::new(reserved_times_index.clone(), transport)
+            .and_then(|transport| {
+                DynamicActivityCost::new(reserved_times_index.clone()).map(|activity| (transport, activity))
+            })
+            .map_err(|err| {
+                vec![FormatError::new(
+                    "E0002".to_string(),
+                    "cannot create transport costs".to_string(),
+                    format!("check fleet definition: '{}'", err),
+                )]
+            })
+            .map::<(Arc<dyn TransportCost + Send + Sync>, Arc<dyn ActivityCost + Send + Sync>), _>(
+                |(transport, activity)| (Arc::new(transport), Arc::new(activity)),
+            )?
+    };
 
     // TODO pass random from outside as there might be need to have it initialized with seed
     //      at the moment, this random instance is used only by multi job permutation generator
@@ -206,30 +229,29 @@ fn map_to_problem(
     );
     let locks = locks.into_iter().chain(read_locks(&api_problem, &job_index).into_iter()).collect::<Vec<_>>();
     let limits = read_travel_limits(&api_problem).unwrap_or_else(|| Arc::new(|_| (None, None)));
-    let mut constraint = create_constraint_pipeline(
-        coord_index.clone(),
-        &jobs,
-        &fleet,
-        transport.clone(),
-        activity.clone(),
-        &problem_props,
-        &locks,
-        limits,
-    );
+    let mut constraint =
+        create_constraint_pipeline(&jobs, &fleet, transport.clone(), activity.clone(), &problem_props, &locks, limits);
 
     let objective = create_objective(&api_problem, &mut constraint, &problem_props);
     let constraint = Arc::new(constraint);
     let extras = Arc::new(
-        create_extras(&api_problem, constraint.clone(), random, &problem_props, job_index, coord_index).map_err(
-            |err| {
-                // TODO make sure that error matches actual reason
-                vec![FormatError::new(
-                    "E0002".to_string(),
-                    "cannot create transport costs".to_string(),
-                    format!("check clustering config: '{}'", err),
-                )]
-            },
-        )?,
+        create_extras(
+            &api_problem,
+            constraint.clone(),
+            random,
+            &problem_props,
+            job_index,
+            coord_index,
+            reserved_times_index,
+        )
+        .map_err(|err| {
+            // TODO make sure that error matches actual reason
+            vec![FormatError::new(
+                "E0002".to_string(),
+                "cannot create transport costs".to_string(),
+                format!("check clustering config: '{}'", err),
+            )]
+        })?,
     );
 
     Ok(Problem {
@@ -244,11 +266,58 @@ fn map_to_problem(
     })
 }
 
+fn read_reserved_times_index(api_problem: &ApiProblem, fleet: &CoreFleet) -> ReservedTimesIndex {
+    let breaks_map = api_problem
+        .fleet
+        .vehicles
+        .iter()
+        .flat_map(|vehicle| {
+            vehicle.shifts.iter().enumerate().flat_map(move |(shift_idx, shift)| {
+                shift.breaks.iter().flat_map(|br| br.iter()).filter_map(move |br| match br {
+                    VehicleBreak::Required { time, duration } => {
+                        Some((vehicle.type_id.clone(), shift_idx, time.clone(), *duration))
+                    }
+                    VehicleBreak::Optional { .. } => None,
+                })
+            })
+        })
+        .collect_group_by_key(|(type_id, shift_idx, _, _)| (type_id.clone(), *shift_idx));
+
+    fleet
+        .actors
+        .iter()
+        .filter_map(|actor| {
+            let type_id = actor.vehicle.dimens.get_value::<String>("type_id").unwrap().clone();
+            let shift_idx = *actor.vehicle.dimens.get_value::<usize>("shift_index").unwrap();
+
+            let times = breaks_map
+                .get(&(type_id, shift_idx))
+                .iter()
+                .flat_map(|data| data.iter())
+                .map(|(_, _, time, duration)| match time {
+                    VehicleRequiredBreakTime::ExactTime(time) => {
+                        let time = parse_time(time);
+                        TimeSpan::Window(TimeWindow::new(time, time + duration))
+                    }
+                    VehicleRequiredBreakTime::OffsetTime(offset) => {
+                        TimeSpan::Offset(TimeOffset::new(*offset, *offset + duration))
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            if times.is_empty() {
+                None
+            } else {
+                Some((actor.clone(), times))
+            }
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn create_constraint_pipeline(
-    coord_index: Arc<CoordIndex>,
     jobs: &Jobs,
-    fleet: &Fleet,
+    fleet: &CoreFleet,
     transport: Arc<dyn TransportCost + Send + Sync>,
     activity: Arc<dyn ActivityCost + Send + Sync>,
     props: &ProblemProperties,
@@ -270,10 +339,10 @@ fn create_constraint_pipeline(
         DURATION_LIMIT_CONSTRAINT_CODE,
     )));
 
-    add_capacity_module(&mut constraint, props, transport.clone());
+    add_capacity_module(&mut constraint, props, activity.clone(), transport.clone());
 
     if props.has_breaks {
-        constraint.add_module(Arc::new(BreakModule::new(transport.clone(), BREAK_CONSTRAINT_CODE)));
+        constraint.add_module(Arc::new(BreakModule::new(activity.clone(), transport.clone(), BREAK_CONSTRAINT_CODE)));
     }
 
     if props.has_compatibility {
@@ -300,50 +369,37 @@ fn create_constraint_pipeline(
         add_tour_size_module(&mut constraint)
     }
 
-    if props.has_area_limits {
-        add_area_module(&mut constraint, coord_index);
-    }
-
     constraint
 }
 
 fn add_capacity_module(
     constraint: &mut ConstraintPipeline,
     props: &ProblemProperties,
+    activity: Arc<dyn ActivityCost + Send + Sync>,
     transport: Arc<dyn TransportCost + Send + Sync>,
 ) {
     constraint.add_module(if props.has_reloads {
         let threshold = 0.9;
         if props.has_multi_dimen_capacity {
             Arc::new(CapacityConstraintModule::<MultiDimLoad>::new_with_multi_trip(
+                activity,
                 transport,
                 CAPACITY_CONSTRAINT_CODE,
                 Arc::new(ReloadMultiTrip::new(Box::new(move |capacity| *capacity * threshold))),
             ))
         } else {
             Arc::new(CapacityConstraintModule::<SingleDimLoad>::new_with_multi_trip(
+                activity,
                 transport,
                 CAPACITY_CONSTRAINT_CODE,
                 Arc::new(ReloadMultiTrip::new(Box::new(move |capacity| *capacity * threshold))),
             ))
         }
     } else if props.has_multi_dimen_capacity {
-        Arc::new(CapacityConstraintModule::<MultiDimLoad>::new(transport, CAPACITY_CONSTRAINT_CODE))
+        Arc::new(CapacityConstraintModule::<MultiDimLoad>::new(activity, transport, CAPACITY_CONSTRAINT_CODE))
     } else {
-        Arc::new(CapacityConstraintModule::<SingleDimLoad>::new(transport, CAPACITY_CONSTRAINT_CODE))
+        Arc::new(CapacityConstraintModule::<SingleDimLoad>::new(activity, transport, CAPACITY_CONSTRAINT_CODE))
     });
-}
-
-fn add_area_module(constraint: &mut ConstraintPipeline, coord_index: Arc<CoordIndex>) {
-    constraint.add_module(Arc::new(AreaModule::new(
-        Arc::new(|actor| actor.vehicle.dimens.get_value::<Vec<Area>>("areas")),
-        Arc::new(move |location| {
-            coord_index
-                .get_by_idx(location)
-                .map_or_else(|| panic!("cannot find location!"), |location| location.to_lat_lng())
-        }),
-        AREA_CONSTRAINT_CODE,
-    )));
 }
 
 fn add_tour_size_module(constraint: &mut ConstraintPipeline) {
@@ -360,6 +416,7 @@ fn create_extras(
     props: &ProblemProperties,
     job_index: JobIndex,
     coord_index: Arc<CoordIndex>,
+    reserved_times_index: ReservedTimesIndex,
 ) -> Result<Extras, String> {
     let mut extras = Extras::default();
     extras.insert(
@@ -368,6 +425,7 @@ fn create_extras(
     );
     extras.insert("coord_index".to_owned(), coord_index);
     extras.insert("job_index".to_owned(), Arc::new(job_index.clone()));
+    extras.insert("reserved_times_index".to_owned(), Arc::new(reserved_times_index));
 
     if props.has_dispatch {
         extras.insert("route_modifier".to_owned(), Arc::new(get_route_modifier(constraint, random, job_index)));
@@ -411,6 +469,17 @@ fn get_problem_properties(api_problem: &ApiProblem, matrices: &[Matrix]) -> Prob
         .filter(|value| *value > 0.)
         .max_by(|a, b| compare_floats(*a, *b));
 
+    let max_area_value = api_problem
+        .fleet
+        .vehicles
+        .iter()
+        .flat_map(|vehicle| vehicle.limits.iter())
+        .flat_map(|limits| limits.areas.iter())
+        .flat_map(|areas| areas.iter())
+        .flat_map(|areas| areas.iter())
+        .filter_map(|limit| if limit.job_value > 0. { Some(limit.job_value) } else { None })
+        .max_by(|a, b| compare_floats(*a, *b));
+
     let has_dispatch = api_problem
         .fleet
         .vehicles
@@ -432,12 +501,6 @@ fn get_problem_properties(api_problem: &ApiProblem, matrices: &[Matrix]) -> Prob
 
     let has_group = api_problem.plan.jobs.iter().any(|job| job.group.is_some());
     let has_compatibility = api_problem.plan.jobs.iter().any(|job| job.compatibility.is_some());
-
-    let has_area_limits = api_problem
-        .fleet
-        .vehicles
-        .iter()
-        .any(|v| v.limits.as_ref().and_then(|l| l.allowed_areas.as_ref()).map_or(false, |a| !a.is_empty()));
     let has_tour_size_limits =
         api_problem.fleet.vehicles.iter().any(|v| v.limits.as_ref().map_or(false, |l| l.tour_size.is_some()));
 
@@ -451,8 +514,8 @@ fn get_problem_properties(api_problem: &ApiProblem, matrices: &[Matrix]) -> Prob
         has_order,
         has_group,
         has_compatibility,
-        has_area_limits,
         has_tour_size_limits,
         max_job_value,
+        max_area_value,
     }
 }

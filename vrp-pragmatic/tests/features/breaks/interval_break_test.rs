@@ -18,9 +18,9 @@ fn can_assign_interval_break_between_jobs() {
         fleet: Fleet {
             vehicles: vec![VehicleType {
                 shifts: vec![VehicleShift {
-                    breaks: Some(vec![VehicleBreak {
-                        time: VehicleBreakTime::TimeOffset(vec![5., 10.]),
-                        places: vec![VehicleBreakPlace { duration: 2.0, location: None, tag: None }],
+                    breaks: Some(vec![VehicleBreak::Optional {
+                        time: VehicleOptionalBreakTime::TimeOffset(vec![5., 10.]),
+                        places: vec![VehicleOptionalBreakPlace { duration: 2.0, location: None, tag: None }],
                         policy: None,
                     }]),
                     ..create_default_vehicle_shift()
@@ -58,7 +58,7 @@ fn can_assign_interval_break_between_jobs() {
                         ("1970-01-01T00:00:00Z", "1970-01-01T00:00:00Z"),
                         0
                     ),
-                    Stop {
+                    Stop::Point(PointStop {
                         location: vec![5., 0.].to_loc(),
                         time: Schedule {
                             arrival: "1970-01-01T00:00:05Z".to_string(),
@@ -91,7 +91,7 @@ fn can_assign_interval_break_between_jobs() {
                                 commute: None
                             }
                         ],
-                    },
+                    }),
                     create_stop_with_activity(
                         "job2",
                         "delivery",
@@ -147,9 +147,9 @@ fn can_assign_interval_break_with_reload() {
                         location: vec![30., 0.].to_loc(),
                     }),
                     dispatch: None,
-                    breaks: Some(vec![VehicleBreak {
-                        time: VehicleBreakTime::TimeOffset(vec![8., 12.]),
-                        places: vec![VehicleBreakPlace { duration: 2.0, location: None, tag: None }],
+                    breaks: Some(vec![VehicleBreak::Optional {
+                        time: VehicleOptionalBreakTime::TimeOffset(vec![8., 12.]),
+                        places: vec![VehicleOptionalBreakPlace { duration: 2.0, location: None, tag: None }],
                         policy: None,
                     }]),
                     reloads: Some(vec![VehicleReload {
@@ -193,7 +193,7 @@ fn can_assign_interval_break_with_reload() {
                         ("1970-01-01T00:00:00Z", "1970-01-01T00:00:00Z"),
                         0
                     ),
-                    Stop {
+                    Stop::Point(PointStop {
                         location: vec![10., 0.].to_loc(),
                         time: Schedule {
                             arrival: "1970-01-01T00:00:10Z".to_string(),
@@ -226,7 +226,7 @@ fn can_assign_interval_break_with_reload() {
                                 commute: None
                             }
                         ],
-                    },
+                    }),
                     create_stop_with_activity(
                         "job2",
                         "delivery",
@@ -293,9 +293,9 @@ fn can_consider_departure_rescheduling() {
         fleet: Fleet {
             vehicles: vec![VehicleType {
                 shifts: vec![VehicleShift {
-                    breaks: Some(vec![VehicleBreak {
-                        time: VehicleBreakTime::TimeOffset(vec![10., 12.]),
-                        places: vec![VehicleBreakPlace { duration: 2.0, location: None, tag: None }],
+                    breaks: Some(vec![VehicleBreak::Optional {
+                        time: VehicleOptionalBreakTime::TimeOffset(vec![10., 12.]),
+                        places: vec![VehicleOptionalBreakPlace { duration: 2.0, location: None, tag: None }],
                         policy: None,
                     }]),
                     ..create_default_vehicle_shift()

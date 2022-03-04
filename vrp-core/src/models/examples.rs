@@ -1,17 +1,26 @@
 use crate::construction::constraints::{ConstraintPipeline, TransportConstraintModule};
 use crate::models::common::*;
 use crate::models::problem::*;
+use crate::models::solution::Route;
 use crate::models::Problem;
 use std::sync::Arc;
 
 struct ExampleTransportCost {}
 
 impl TransportCost for ExampleTransportCost {
-    fn duration(&self, _: &Profile, _: usize, _: usize, _: f64) -> f64 {
+    fn duration_approx(&self, _: &Profile, _: Location, _: Location) -> Duration {
         42.
     }
 
-    fn distance(&self, _: &Profile, _: usize, _: usize, _: f64) -> f64 {
+    fn distance_approx(&self, _: &Profile, _: Location, _: Location) -> Distance {
+        42.
+    }
+
+    fn duration(&self, _: &Route, _: Location, _: Location, _: TravelTime) -> Duration {
+        42.
+    }
+
+    fn distance(&self, _: &Route, _: Location, _: Location, _: TravelTime) -> Distance {
         42.
     }
 }

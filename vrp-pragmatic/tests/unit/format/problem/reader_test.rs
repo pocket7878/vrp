@@ -152,12 +152,12 @@ fn can_read_complex_problem() {
                         location: vec![52.4862, 13.45148].to_loc(),
                     }),
                     dispatch: None,
-                    breaks: Some(vec![VehicleBreak {
-                        time: VehicleBreakTime::TimeWindow(vec![
+                    breaks: Some(vec![VehicleBreak::Optional {
+                        time: VehicleOptionalBreakTime::TimeWindow(vec![
                             "1970-01-01T00:00:10Z".to_string(),
                             "1970-01-01T00:01:20Z".to_string(),
                         ]),
-                        places: vec![VehicleBreakPlace {
+                        places: vec![VehicleOptionalBreakPlace {
                             duration: 100.0,
                             location: Some(vec![52.48315, 13.4330].to_loc()),
                             tag: None,
@@ -172,7 +172,7 @@ fn can_read_complex_problem() {
                     max_distance: Some(123.1),
                     shift_time: Some(100.),
                     tour_size: Some(3),
-                    allowed_areas: None,
+                    areas: None,
                 }),
             }],
             profiles: create_default_matrix_profiles(),

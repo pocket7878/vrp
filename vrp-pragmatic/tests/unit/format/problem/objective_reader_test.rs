@@ -1,10 +1,10 @@
+use crate::constraints::{TOTAL_VALUE_KEY, TOUR_ORDER_KEY};
 use crate::format::problem::reader::objective_reader::create_objective;
 use crate::format::problem::reader::ProblemProperties;
 use crate::helpers::create_empty_insertion_context;
 use crate::helpers::create_empty_problem;
 use std::sync::Arc;
-use vrp_core::construction::constraints::TOTAL_VALUE_KEY;
-use vrp_core::construction::constraints::{ConstraintPipeline, TOUR_ORDER_KEY};
+use vrp_core::construction::constraints::ConstraintPipeline;
 use vrp_core::construction::heuristics::InsertionContext;
 use vrp_core::rosomaxa::prelude::MultiObjective;
 
@@ -19,9 +19,9 @@ fn create_problem_props() -> ProblemProperties {
         has_order: false,
         has_group: false,
         has_compatibility: false,
-        has_area_limits: false,
         has_tour_size_limits: false,
         max_job_value: None,
+        max_area_value: None,
     }
 }
 

@@ -1,5 +1,4 @@
 use super::*;
-use crate::format::Location;
 use crate::helpers::*;
 
 #[test]
@@ -66,40 +65,6 @@ fn can_detect_missing_matrix_when_indices_used() {
 }
 
 #[test]
-fn can_detect_limit_areas_with_indices() {
-    let problem = Problem {
-        plan: Plan { jobs: vec![create_delivery_job_with_index("job1", 0)], ..create_empty_plan() },
-        fleet: Fleet {
-            vehicles: vec![VehicleType {
-                limits: Some(VehicleLimits {
-                    max_distance: None,
-                    shift_time: None,
-                    tour_size: None,
-                    allowed_areas: Some(vec![AreaLimit {
-                        priority: None,
-                        outer_shape: vec![
-                            Location::new_coordinate(-5., -5.),
-                            Location::new_coordinate(5., -5.),
-                            Location::new_coordinate(5., 5.),
-                            Location::new_coordinate(-5., 5.),
-                        ],
-                    }]),
-                }),
-                ..create_default_vehicle_type()
-            }],
-            profiles: create_default_matrix_profiles(),
-        },
-        ..create_empty_problem()
-    };
-    let coord_index = CoordIndex::new(&problem);
-    let ctx = ValidationContext::new(&problem, None, &coord_index);
-
-    let result = check_e1504_limit_areas_cannot_be_used_with_indices(&ctx, ctx.coord_index.get_used_types());
-
-    assert_eq!(result.err().map(|err| err.code), Some("E1504".to_string()));
-}
-
-#[test]
 fn can_detect_index_mismatch() {
     let problem = Problem {
         plan: Plan {
@@ -122,9 +87,9 @@ fn can_detect_index_mismatch() {
     let coord_index = CoordIndex::new(&problem);
     let ctx = ValidationContext::new(&problem, Some(&matrices), &coord_index);
 
-    let result = check_e1505_index_size_mismatch(&ctx);
+    let result = check_e1504_index_size_mismatch(&ctx);
 
-    assert_eq!(result.err().map(|err| err.code), Some("E1505".to_string()));
+    assert_eq!(result.err().map(|err| err.code), Some("E1504".to_string()));
 }
 
 #[test]
@@ -142,7 +107,7 @@ fn can_detect_missing_profile() {
     let coord_index = CoordIndex::new(&problem);
     let ctx = ValidationContext::new(&problem, None, &coord_index);
 
-    let result = check_e1506_profiles_exist(&ctx);
+    let result = check_e1505_profiles_exist(&ctx);
 
-    assert_eq!(result.err().map(|err| err.code), Some("E1506".to_string()));
+    assert_eq!(result.err().map(|err| err.code), Some("E1505".to_string()));
 }

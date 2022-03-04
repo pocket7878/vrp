@@ -3,7 +3,7 @@
 mod assignment_test;
 
 use super::*;
-use crate::format::solution::activity_matcher::{try_match_job, JobInfo};
+use crate::format::solution::activity_matcher::*;
 use crate::format::{get_coord_index, get_job_index};
 use crate::utils::combine_error_results;
 use hashbrown::HashSet;
@@ -66,7 +66,7 @@ fn check_jobs_presence(ctx: &CheckerContext) -> Result<(), String> {
     ctx.solution.tours.iter().try_for_each(|tour| {
         tour.stops
             .iter()
-            .flat_map(|stop| stop.activities.iter())
+            .flat_map(|stop| stop.activities())
             .enumerate()
             .filter(|(_, activity)| activity_types.contains(&activity.activity_type.as_str()))
             .try_for_each(|(idx, activity)| {
@@ -155,78 +155,89 @@ fn check_jobs_presence(ctx: &CheckerContext) -> Result<(), String> {
 
 /// Checks job constraint violations.
 fn check_jobs_match(ctx: &CheckerContext) -> Result<(), String> {
+    let job_index = get_job_index(&ctx.core_problem);
+    let coord_index = get_coord_index(&ctx.core_problem);
     let job_ids = ctx
         .solution
         .tours
         .iter()
         .flat_map(move |tour| {
             tour.stops.iter().flat_map(move |stop| {
-                stop.activities
+                stop.activities()
                     .iter()
                     .enumerate()
                     .filter({
                         move |(idx, activity)| {
-                            let result = try_match_job(
-                                tour,
-                                stop,
-                                activity,
-                                get_job_index(&ctx.core_problem),
-                                get_coord_index(&ctx.core_problem),
-                            );
-                            let not_equal = |left: f64, right: f64| compare_floats(left, right) != Ordering::Equal;
+                            match stop {
+                                Stop::Point(stop) => {
+                                    let result = try_match_point_job(tour, stop, activity, job_index, coord_index);
+                                    match result {
+                                        Err(_) => {
+                                            // NOTE required break is not a job
+                                            if activity.activity_type == "break" {
+                                                try_match_break_activity(&ctx.problem, tour, &stop.time, activity).is_err()
+                                            } else {
+                                                true
+                                            }
+                                        },
+                                        Ok(Some(JobInfo(_, _, place, time))) => {
+                                            let not_equal = |left: f64, right: f64| compare_floats(left, right) != Ordering::Equal;
+                                            let parking = ctx
+                                                .clustering
+                                                .as_ref()
+                                                .map(|config| config.serving.get_parking())
+                                                .unwrap_or(0.);
+                                            let commute_profile = ctx.clustering.as_ref().map(|config| config.profile.clone());
+                                            let domain_commute = ctx.get_commute_info(commute_profile, parking, stop, *idx);
+                                            let extra_time = get_extra_time(stop, activity, &place).unwrap_or(0.);
 
-                            match result {
-                                Err(_) => true,
-                                Ok(Some(JobInfo(_, _, place, time))) => {
-                                    let parking = ctx
-                                        .clustering
-                                        .as_ref()
-                                        .map(|config| config.serving.get_parking())
-                                        .unwrap_or(0.);
-                                    let commute_profile = ctx.clustering.as_ref().map(|config| config.profile.clone());
-                                    let domain_commute = ctx.get_commute_info(commute_profile, parking, stop, *idx);
-
-                                    match (&ctx.clustering, &activity.commute, domain_commute) {
-                                        (_, _, Err(_))
-                                        | (_, None, Ok(Some(_)))
-                                        | (_, Some(_), Ok(None))
-                                        | (&None, &Some(_), Ok(Some(_))) => true,
-                                        (_, None, Ok(None)) => {
-                                            let expected_departure = time.start.max(place.time.start) + place.duration;
-                                            not_equal(time.end, expected_departure)
-                                        }
-                                        (Some(config), Some(commute), Ok(Some(d_commute))) => {
-                                            let (service_time, parking) = match config.serving {
-                                                ServingPolicy::Original { parking } => (place.duration, parking),
-                                                ServingPolicy::Multiplier { multiplier, parking } => {
-                                                    (place.duration * multiplier, parking)
+                                            match (&ctx.clustering, &activity.commute, domain_commute) {
+                                                (_, _, Err(_))
+                                                | (_, None, Ok(Some(_)))
+                                                | (_, Some(_), Ok(None))
+                                                | (&None, &Some(_), Ok(Some(_))) => true,
+                                                (_, None, Ok(None)) => {
+                                                    let expected_departure = time.start.max(place.time.start) + place.duration + extra_time;
+                                                    not_equal(time.end, expected_departure)
                                                 }
-                                                ServingPolicy::Fixed { value, parking } => (value, parking),
-                                            };
+                                                (Some(config), Some(commute), Ok(Some(d_commute))) => {
+                                                    let (service_time, parking) = match config.serving {
+                                                        ServingPolicy::Original { parking } => (place.duration, parking),
+                                                        ServingPolicy::Multiplier { multiplier, parking } => {
+                                                            (place.duration * multiplier, parking)
+                                                        }
+                                                        ServingPolicy::Fixed { value, parking } => (value, parking),
+                                                    };
 
-                                            let a_commute = commute.to_domain(&ctx.coord_index);
+                                                    let a_commute = commute.to_domain(&ctx.coord_index);
 
-                                            // NOTE: we keep parking in service time of a first activity of the non-first cluster
-                                            let service_time = service_time
-                                                + if a_commute.is_zero_distance() && *idx > 0 { parking } else { 0. };
+                                                    // NOTE: we keep parking in service time of a first activity of the non-first cluster
+                                                    let service_time = service_time
+                                                        + if a_commute.is_zero_distance() && *idx > 0 { parking } else { 0. };
 
-                                            let expected_departure = time.start.max(place.time.start)
-                                                + service_time
-                                                + d_commute.backward.duration;
-                                            let actual_departure = time.end + d_commute.backward.duration;
+                                                    let expected_departure = time.start.max(place.time.start)
+                                                        + service_time
+                                                        + d_commute.backward.duration
+                                                        + extra_time;
+                                                    let actual_departure = time.end + d_commute.backward.duration;
 
-                                            // NOTE: a "workaroundish" approach for two clusters in the same stop
-                                            (not_equal(actual_departure, expected_departure)
-                                                && not_equal(actual_departure, expected_departure - parking))
-                                                // compare commute
-                                                || not_equal(a_commute.forward.distance, d_commute.forward.distance)
-                                                || not_equal(a_commute.forward.duration, d_commute.forward.duration)
-                                                || not_equal(a_commute.backward.distance, d_commute.backward.distance)
-                                                || not_equal(a_commute.backward.duration, d_commute.backward.duration)
+                                                    // NOTE: a "workaroundish" approach for two clusters in the same stop
+                                                    (not_equal(actual_departure, expected_departure)
+                                                        && not_equal(actual_departure, expected_departure - parking))
+                                                        // compare commute
+                                                        || not_equal(a_commute.forward.distance, d_commute.forward.distance)
+                                                        || not_equal(a_commute.forward.duration, d_commute.forward.duration)
+                                                        || not_equal(a_commute.backward.distance, d_commute.backward.distance)
+                                                        || not_equal(a_commute.backward.duration, d_commute.backward.duration)
+                                                }
+                                            }
                                         }
+                                        _ => false,
                                     }
                                 }
-                                _ => false,
+                                Stop::Transit(stop) => {
+                                    try_match_transit_activity(&ctx.problem, tour, stop, activity).is_err()
+                                }
                             }
                         }
                     })
@@ -266,7 +277,7 @@ fn check_dispatch(ctx: &CheckerContext) -> Result<(), String> {
             .iter()
             .enumerate()
             .flat_map(|(stop_idx, stop)| {
-                stop.activities
+                stop.activities()
                     .iter()
                     .enumerate()
                     .map(move |(activity_index, activity)| (stop_idx, activity_index, activity))
@@ -288,12 +299,18 @@ fn check_dispatch(ctx: &CheckerContext) -> Result<(), String> {
 
         if should_have_dispatch {
             let (stop_idx, activity_idx, dispatch_activity) = dispatch_in_tour.first().unwrap();
-            let first_stop = tour.stops.first().unwrap();
+            let first_stop_location = tour
+                .stops
+                .first()
+                .unwrap()
+                .as_point()
+                .map(|point| point.location.clone())
+                .ok_or_else(|| "first stop has no location".to_string())?;
 
             match (stop_idx, activity_idx) {
                 (0, 1) => {
                     if let Some(location) = &dispatch_activity.location {
-                        if *location != first_stop.location {
+                        if *location != first_stop_location {
                             return Err(format!(
                                 "invalid dispatch location: {}, expected to match the first stop",
                                 location
@@ -303,7 +320,7 @@ fn check_dispatch(ctx: &CheckerContext) -> Result<(), String> {
                 }
                 (1, 0) => {
                     if let Some(location) = &dispatch_activity.location {
-                        if *location == first_stop.location {
+                        if *location == first_stop_location {
                             return Err(format!(
                                 "invalid dispatch location: {}, expected not to match the first stop",
                                 location
@@ -327,7 +344,7 @@ fn check_groups(ctx: &CheckerContext) -> Result<(), String> {
         .fold(HashMap::<String, HashSet<_>>::default(), |mut acc, tour| {
             tour.stops
                 .iter()
-                .flat_map(|stop| stop.activities.iter())
+                .flat_map(|stop| stop.activities().iter())
                 .flat_map(|activity| ctx.get_job_by_id(&activity.job_id))
                 .flat_map(|job| job.group.as_ref())
                 .for_each(|group| {

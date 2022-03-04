@@ -7,13 +7,15 @@ use crate::format::solution::activity_matcher::get_job_tag;
 use crate::format::solution::model::Timing;
 use crate::format::solution::*;
 use crate::format::*;
-use crate::format_time;
+use crate::{format_time, parse_time};
+use std::cmp::Ordering;
 use std::io::{BufWriter, Write};
 use vrp_core::construction::constraints::route_intervals;
 use vrp_core::models::common::*;
-use vrp_core::models::problem::Multi;
+use vrp_core::models::problem::{Multi, TravelTime};
 use vrp_core::models::solution::{Activity, Route};
 use vrp_core::models::{Problem, Solution};
+use vrp_core::prelude::compare_floats;
 use vrp_core::rosomaxa::evolution::TelemetryMetrics;
 use vrp_core::solver::processing::VicinityDimension;
 
@@ -98,8 +100,13 @@ impl Leg {
 /// Creates solution.
 pub fn create_solution(problem: &Problem, solution: &Solution, metrics: Option<&TelemetryMetrics>) -> ApiSolution {
     let coord_index = get_coord_index(problem);
+    let reserved_times_index = get_reserved_times_index(problem);
 
-    let tours = solution.routes.iter().map(|r| create_tour(problem, r, coord_index)).collect::<Vec<Tour>>();
+    let tours = solution
+        .routes
+        .iter()
+        .map(|r| create_tour(problem, r, coord_index, reserved_times_index))
+        .collect::<Vec<Tour>>();
 
     let statistic = tours.iter().fold(Statistic::default(), |acc, tour| acc + tour.statistic.clone());
 
@@ -111,13 +118,19 @@ pub fn create_solution(problem: &Problem, solution: &Solution, metrics: Option<&
     ApiSolution { statistic, tours, unassigned, violations, extras }
 }
 
-fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> Tour {
+fn create_tour(
+    problem: &Problem,
+    route: &Route,
+    coord_index: &CoordIndex,
+    reserved_times_index: &ReservedTimesIndex,
+) -> Tour {
+    // TODO reduce complexity
+
     let is_multi_dimen = has_multi_dimensional_capacity(problem.extras.as_ref());
     let parking = get_parking_time(problem.extras.as_ref());
 
     let actor = route.actor.as_ref();
     let vehicle = actor.vehicle.as_ref();
-    let profile = &vehicle.profile;
     let transport = problem.transport.as_ref();
 
     let mut tour = Tour {
@@ -156,7 +169,7 @@ fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> To
                 (has_dispatch, is_same_location)
             });
 
-            tour.stops.push(Stop {
+            tour.stops.push(Stop::Point(PointStop {
                 location: coord_index.get_by_idx(start.place.location).unwrap(),
                 time: format_schedule(&start.schedule),
                 load: if has_dispatch { vec![0] } else { start_delivery.as_vec() },
@@ -177,7 +190,7 @@ fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> To
                     commute: None,
                 }],
                 parking: None,
-            });
+            }));
             (start_idx + 1, start)
         } else {
             (start_idx, route.tour.get(start_idx - 1).unwrap())
@@ -217,8 +230,9 @@ fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> To
 
                 let (driving, transport_cost) = if commute.is_zero_distance() {
                     // NOTE: use original cost traits to adapt time-based costs (except waiting/commuting)
-                    let duration = transport.duration(profile, prev_location, act.place.location, prev_departure);
-                    let transport_cost = transport.cost(actor, prev_location, act.place.location, prev_departure);
+                    let prev_departure = TravelTime::Departure(prev_departure);
+                    let duration = transport.duration(route, prev_location, act.place.location, prev_departure);
+                    let transport_cost = transport.cost(route, prev_location, act.place.location, prev_departure);
                     (duration, transport_cost)
                 } else {
                     // NOTE: no need to drive in case of non-zero commute, this goes to commuting time
@@ -240,11 +254,12 @@ fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> To
                 let activity_departure = service_end;
 
                 // TODO: add better support of time based activity costs
-                let serving_cost = problem.activity.cost(actor, act, service_start);
+                let serving_cost = problem.activity.cost(route, act, service_start);
                 let total_cost = serving_cost + transport_cost + waiting * vehicle.costs.per_waiting_time;
 
                 let location_distance =
-                    transport.distance(profile, prev_location, act.place.location, prev_departure) as i64;
+                    transport.distance(route, prev_location, act.place.location, TravelTime::Departure(prev_departure))
+                        as i64;
                 let distance = leg.statistic.distance + location_distance - commute.forward.distance as i64;
 
                 let is_new_stop = match (act.commute.as_ref(), prev_location == act.place.location) {
@@ -254,7 +269,7 @@ fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> To
                 };
 
                 if is_new_stop {
-                    tour.stops.push(Stop {
+                    tour.stops.push(Stop::Point(PointStop {
                         location: coord_index.get_by_idx(act.place.location).unwrap(),
                         time: format_schedule(&act.schedule),
                         load: prev_load.as_vec(),
@@ -268,13 +283,16 @@ fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> To
                             None
                         },
                         activities: vec![],
-                    });
+                    }));
                 }
 
                 let load = calculate_load(prev_load, act, is_multi_dimen);
 
                 let last = tour.stops.len() - 1;
-                let mut last = tour.stops.get_mut(last).unwrap();
+                let mut last = match tour.stops.get_mut(last).unwrap() {
+                    Stop::Point(point) => point,
+                    Stop::Transit(_) => unreachable!(),
+                };
 
                 last.time.departure = format_time(act.schedule.departure);
                 last.load = load.as_vec();
@@ -300,6 +318,7 @@ fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> To
                 } else {
                     tour.stops
                         .last()
+                        .and_then(|stop| stop.as_point())
                         .and_then(|stop| coord_index.get_by_loc(&stop.location))
                         .expect("expect to have at least one stop")
                 };
@@ -329,23 +348,155 @@ fn create_tour(problem: &Problem, route: &Route, coord_index: &CoordIndex) -> To
         leg
     });
 
+    leg.statistic.cost += vehicle.costs.fixed;
+    tour.statistic = leg.statistic;
+
+    insert_reserved_times(route, &mut tour, reserved_times_index);
+
     // NOTE remove redundant info
     tour.stops
         .iter_mut()
-        .filter(|stop| stop.activities.len() == 1)
-        .flat_map(|stop| stop.activities.iter_mut())
+        .filter(|stop| stop.activities().len() == 1)
+        .flat_map(|stop| match stop {
+            Stop::Point(point) => point.activities.iter_mut(),
+            Stop::Transit(transit) => transit.activities.iter_mut(),
+        })
         .for_each(|activity| {
             activity.location = None;
             activity.time = None;
         });
 
-    leg.statistic.cost += vehicle.costs.fixed;
-
     tour.vehicle_id = vehicle.dimens.get_id().unwrap().clone();
     tour.type_id = vehicle.dimens.get_value::<String>("type_id").unwrap().clone();
-    tour.statistic = leg.statistic;
 
     tour
+}
+
+fn insert_reserved_times(route: &Route, tour: &mut Tour, reserved_times_index: &ReservedTimesIndex) {
+    let shift_time = route
+        .tour
+        .start()
+        .zip(route.tour.end())
+        .map(|(start, end)| TimeWindow::new(start.schedule.departure, end.schedule.arrival))
+        .expect("empty tour");
+
+    reserved_times_index
+        .get(&route.actor)
+        .iter()
+        .flat_map(|times| times.iter())
+        .map(|time| match time {
+            TimeSpan::Offset(offset) => TimeWindow::new(offset.start + shift_time.start, offset.end + shift_time.start),
+            TimeSpan::Window(tw) => tw.clone(),
+        })
+        .filter(|time| shift_time.intersects(time))
+        .for_each(|reserved_time| {
+            // NOTE scan and insert new stop if necessary
+            if let Some((leg_idx, load)) = tour
+                .stops
+                .windows(2)
+                .enumerate()
+                .filter_map(|(leg_idx, stops)| {
+                    if let &[prev, next] = &stops {
+                        let travel_tw = TimeWindow::new(
+                            parse_time(&prev.schedule().departure),
+                            parse_time(&next.schedule().arrival),
+                        );
+
+                        if compare_floats(travel_tw.start, reserved_time.end) == Ordering::Less
+                            && compare_floats(reserved_time.start, travel_tw.end) == Ordering::Less
+                        {
+                            return Some((leg_idx, prev.load().clone()));
+                        }
+                    }
+
+                    None
+                })
+                .next()
+            {
+                tour.stops.insert(
+                    leg_idx + 1,
+                    Stop::Transit(TransitStop {
+                        time: ApiSchedule {
+                            arrival: format_time(reserved_time.start),
+                            departure: format_time(reserved_time.end),
+                        },
+                        load,
+                        activities: vec![],
+                    }),
+                )
+            }
+
+            let break_time = reserved_time.duration() as i64;
+
+            // NOTE insert activity
+            tour.stops.iter_mut().for_each(|stop| {
+                let stop_tw =
+                    TimeWindow::new(parse_time(&stop.schedule().arrival), parse_time(&stop.schedule().departure));
+                if stop_tw.intersects(&reserved_time) {
+                    let idx = stop
+                        .activities()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(activity_idx, activity)| {
+                            let activity_tw = activity.time.as_ref().map_or(stop_tw.clone(), |interval| {
+                                TimeWindow::new(parse_time(&interval.start), parse_time(&interval.end))
+                            });
+
+                            if activity_tw.intersects(&reserved_time) {
+                                Some(activity_idx + 1)
+                            } else {
+                                None
+                            }
+                        })
+                        .next()
+                        .unwrap_or(0);
+
+                    // TODO costs may not match?
+                    let activities = match stop {
+                        Stop::Point(point) => {
+                            tour.statistic.cost += break_time as f64 * route.actor.vehicle.costs.per_service_time;
+                            &mut point.activities
+                        }
+                        Stop::Transit(transit) => {
+                            tour.statistic.times.driving -= break_time;
+                            &mut transit.activities
+                        }
+                    };
+
+                    activities.insert(
+                        idx,
+                        ApiActivity {
+                            job_id: "break".to_string(),
+                            activity_type: "break".to_string(),
+                            location: None,
+                            time: Some(Interval {
+                                start: format_time(reserved_time.start),
+                                end: format_time(reserved_time.end),
+                            }),
+                            job_tag: None,
+                            commute: None,
+                        },
+                    );
+
+                    let activity_count = activities.len() - 1;
+
+                    activities.iter_mut().take(activity_count).for_each(|activity| {
+                        if let Some(time) = &mut activity.time {
+                            let start = parse_time(&time.start);
+                            let end = parse_time(&time.end);
+                            let overlap = TimeWindow::new(start, end).overlapping(&reserved_time);
+
+                            if let Some(overlap) = overlap {
+                                let extra_time = reserved_time.end - overlap.end + overlap.duration();
+                                time.end = format_time(end + extra_time);
+                            }
+                        }
+                    });
+                }
+            });
+
+            tour.statistic.times.break_time += break_time;
+        });
 }
 
 fn format_schedule(schedule: &DomainSchedule) -> ApiSchedule {

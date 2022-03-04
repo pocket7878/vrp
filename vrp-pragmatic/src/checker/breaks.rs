@@ -16,12 +16,12 @@ fn check_break_assignment(context: &CheckerContext) -> Result<(), String> {
         let actual_break_count = tour
             .stops
             .iter()
-            .flat_map(|stop| stop.activities.iter())
+            .flat_map(|stop| stop.activities().iter())
             .filter(|activity| activity.activity_type == "break")
             .count();
         let matched_break_count = tour.stops.iter().try_fold(0, |acc, stop| {
-            stop.activities
-                .windows(stop.activities.len().min(2))
+            stop.activities()
+                .windows(stop.activities().len().min(2))
                 .flat_map(|leg| as_leg_info_with_break(context, tour, stop, leg))
                 .try_fold(acc, |acc, (from_loc, from, to, vehicle_break)| {
                     // check time
@@ -39,13 +39,17 @@ fn check_break_assignment(context: &CheckerContext) -> Result<(), String> {
                     let backward_loc = from
                         .and_then(|activity| activity.commute.as_ref())
                         .and_then(|commute| commute.backward.as_ref())
-                        .map(|info| &info.location);
+                        .map(|info| &info.location)
+                        .cloned();
 
-                    // TODO check tag and duration
-                    let has_match = vehicle_break.places.iter().any(|place| match &place.location {
-                        Some(location) => actual_loc == *location,
-                        None => *from_loc == actual_loc || backward_loc.map_or(false, |loc| *loc == actual_loc),
-                    });
+                    let has_match = match vehicle_break {
+                        // TODO check tag and duration
+                        VehicleBreak::Optional { places, .. } => places.iter().any(|place| match &place.location {
+                            Some(location) => actual_loc.as_ref().map_or(false, |actual_loc| actual_loc == location),
+                            None => from_loc == actual_loc || backward_loc == actual_loc,
+                        }),
+                        VehicleBreak::Required { .. } => actual_loc.is_none() || from_loc == actual_loc,
+                    };
 
                     if !has_match {
                         return Err(format!(
@@ -64,20 +68,35 @@ fn check_break_assignment(context: &CheckerContext) -> Result<(), String> {
             ));
         }
 
+        let departure = tour
+            .stops
+            .first()
+            .map(|stop| parse_time(&stop.schedule().departure))
+            .ok_or_else(|| format!("cannot get departure for tour '{}'", tour.vehicle_id))?;
+
         let arrival = tour
             .stops
             .last()
-            .map(|stop| parse_time(&stop.time.arrival))
+            .map(|stop| parse_time(&stop.schedule().arrival))
             .ok_or_else(|| format!("cannot get arrival for tour '{}'", tour.vehicle_id))?;
+
+        let tour_tw = TimeWindow::new(departure, arrival);
 
         let expected_break_count =
             vehicle_shift.breaks.iter().flat_map(|breaks| breaks.iter()).fold(0, |acc, vehicle_break| {
                 let break_tw = get_break_time_window(tour, vehicle_break).expect("cannot get break time windows");
-                let policy = vehicle_break.policy.as_ref().cloned().unwrap_or(VehicleBreakPolicy::SkipIfNoIntersection);
 
-                let should_assign = match policy {
-                    VehicleBreakPolicy::SkipIfNoIntersection => break_tw.start < arrival,
-                    VehicleBreakPolicy::SkipIfArrivalBeforeEnd => arrival > break_tw.end,
+                let should_assign = match vehicle_break {
+                    VehicleBreak::Optional { policy, .. } => {
+                        let policy =
+                            policy.as_ref().cloned().unwrap_or(VehicleOptionalBreakPolicy::SkipIfNoIntersection);
+
+                        match policy {
+                            VehicleOptionalBreakPolicy::SkipIfNoIntersection => break_tw.start < arrival,
+                            VehicleOptionalBreakPolicy::SkipIfArrivalBeforeEnd => arrival > break_tw.end,
+                        }
+                    }
+                    VehicleBreak::Required { .. } => break_tw.intersects(&tour_tw),
                 };
 
                 if should_assign {
@@ -105,7 +124,7 @@ fn as_leg_info_with_break<'a>(
     tour: &Tour,
     stop: &'a Stop,
     leg: &'a [Activity],
-) -> Option<(&'a Location, Option<&'a Activity>, &'a Activity, VehicleBreak)> {
+) -> Option<(Option<Location>, Option<&'a Activity>, &'a Activity, VehicleBreak)> {
     let leg = match leg {
         [from, to] => Some((Some(from), to)),
         [to] => Some((None, to)),
@@ -114,28 +133,39 @@ fn as_leg_info_with_break<'a>(
 
     if let Some((from, to)) = leg {
         if let Ok(ActivityType::Break(vehicle_break)) = context.get_activity_type(tour, stop, to) {
-            let from_loc =
-                leg.and_then(|(from, _)| from).and_then(|action| action.location.as_ref()).unwrap_or(&stop.location);
-            return Some((from_loc, from, to, vehicle_break));
+            let from_loc = leg.and_then(|(from, _)| from).and_then(|action| action.location.as_ref()).or(match stop {
+                Stop::Point(point) => Some(&point.location),
+                Stop::Transit(_) => None,
+            });
+            return Some((from_loc.cloned(), from, to, vehicle_break));
         }
     }
     None
 }
 
 fn get_break_time_window(tour: &Tour, vehicle_break: &VehicleBreak) -> Result<TimeWindow, String> {
-    match &vehicle_break.time {
-        VehicleBreakTime::TimeWindow(tw) => Ok(parse_time_window(tw)),
-        VehicleBreakTime::TimeOffset(offset) => {
+    let departure = tour
+        .stops
+        .first()
+        .map(|stop| parse_time(&stop.schedule().departure))
+        .ok_or_else(|| format!("cannot get departure time for tour: '{}'", tour.vehicle_id))?;
+
+    match vehicle_break {
+        VehicleBreak::Optional { time: VehicleOptionalBreakTime::TimeWindow(tw), .. } => Ok(parse_time_window(tw)),
+        VehicleBreak::Optional { time: VehicleOptionalBreakTime::TimeOffset(offset), .. } => {
             if offset.len() != 2 {
                 return Err(format!("invalid offset break for tour: '{}'", tour.vehicle_id));
             }
 
-            let departure = tour
-                .stops
-                .first()
-                .map(|stop| parse_time(&stop.time.departure))
-                .ok_or_else(|| format!("cannot get departure time for tour: '{}'", tour.vehicle_id))?;
             Ok(TimeWindow::new(departure + *offset.first().unwrap(), departure + *offset.last().unwrap()))
+        }
+        VehicleBreak::Required { time, duration } => {
+            let start = match time {
+                VehicleRequiredBreakTime::OffsetTime(offset) => departure + *offset,
+                VehicleRequiredBreakTime::ExactTime(time) => parse_time(time),
+            };
+
+            Ok(TimeWindow::new(start, start + duration))
         }
     }
 }

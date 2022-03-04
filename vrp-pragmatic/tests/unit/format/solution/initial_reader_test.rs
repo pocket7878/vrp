@@ -34,9 +34,9 @@ fn create_basic_problem(breaks: Option<Vec<VehicleBreak>>) -> Problem {
 }
 
 fn create_default_breaks() -> Option<Vec<VehicleBreak>> {
-    Some(vec![VehicleBreak {
-        time: VehicleBreakTime::TimeWindow(vec![format_time(5.), format_time(10.)]),
-        places: vec![VehicleBreakPlace { duration: 2.0, location: None, tag: None }],
+    Some(vec![VehicleBreak::Optional {
+        time: VehicleOptionalBreakTime::TimeWindow(vec![format_time(5.), format_time(10.)]),
+        places: vec![VehicleOptionalBreakPlace { duration: 2.0, location: None, tag: None }],
         policy: None,
     }])
 }
@@ -116,7 +116,7 @@ fn can_read_basic_init_solution() {
                     2,
                     "p1",
                 ),
-                Stop {
+                Stop::Point(PointStop {
                     location: vec![3., 0.].to_loc(),
                     time: Schedule {
                         arrival: "1970-01-01T00:00:05Z".to_string(),
@@ -149,7 +149,7 @@ fn can_read_basic_init_solution() {
                             commute: None,
                         },
                     ],
-                },
+                }),
                 create_stop_with_activity_with_tag(
                     "job2",
                     "delivery",
@@ -218,7 +218,7 @@ fn can_handle_commute_error_in_init_solution() {
                     ("1970-01-01T00:00:00Z", "1970-01-01T00:00:00Z"),
                     0,
                 ),
-                Stop {
+                Stop::Point(PointStop {
                     location: vec![1., 0.].to_loc(),
                     time: Schedule {
                         arrival: "1970-01-01T00:00:01Z".to_string(),
@@ -238,7 +238,7 @@ fn can_handle_commute_error_in_init_solution() {
                         job_tag: None,
                         commute: Some(Commute { forward: None, backward: None }),
                     }],
-                },
+                }),
             ],
             ..create_empty_tour()
         }],

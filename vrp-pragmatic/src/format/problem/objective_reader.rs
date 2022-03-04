@@ -2,11 +2,14 @@
 #[path = "../../../tests/unit/format/problem/objective_reader_test.rs"]
 mod objective_reader_test;
 
+use crate::constraints::{AreaModule, TOTAL_VALUE_KEY, TOUR_ORDER_KEY};
+use crate::core::models::common::IdDimension;
 use crate::format::problem::reader::{ApiProblem, ProblemProperties};
 use crate::format::problem::BalanceOptions;
 use crate::format::problem::Objective::TourOrder as FormatTourOrder;
 use crate::format::problem::Objective::*;
-use crate::format::TOUR_ORDER_CONSTRAINT_CODE;
+use crate::format::{AREA_CONSTRAINT_CODE, TOUR_ORDER_CONSTRAINT_CODE};
+use hashbrown::HashMap;
 use std::sync::Arc;
 use vrp_core::construction::clustering::vicinity::ClusterDimension;
 use vrp_core::construction::constraints::{ConstraintPipeline, FleetUsageConstraintModule};
@@ -22,8 +25,8 @@ pub fn create_objective(
     constraint: &mut ConstraintPipeline,
     props: &ProblemProperties,
 ) -> Arc<ProblemObjective> {
-    Arc::new(match (&api_problem.objectives, props.max_job_value, props.has_order) {
-        (Some(objectives), _, _) => ProblemObjective::new(
+    Arc::new(match &api_problem.objectives {
+        Some(objectives) => ProblemObjective::new(
             objectives
                 .iter()
                 .map(|objectives| {
@@ -83,42 +86,40 @@ pub fn create_objective(
                             constraint.add_module(module);
                             core_objectives.push(objective);
                         }
+                        AreaOrder { breaks, is_constrained, is_value_preferred } => {
+                            let max_value = props.max_area_value.unwrap_or(1.);
+                            let (module, objectives) =
+                                get_area(max_value, *breaks, *is_constrained, is_value_preferred.unwrap_or(false));
+
+                            constraint.add_module(module);
+                            objectives.into_iter().for_each(|objective| core_objectives.push(objective));
+                        }
                     });
                     core_objectives
                 })
                 .collect(),
         ),
-        (None, Some(max_value), has_order) => {
-            let (value_module, value_objective) = get_value(max_value, None, None);
-
-            constraint.add_module(value_module);
+        None => {
+            let mut objectives: Vec<Vec<TargetObjective>> = vec![
+                vec![Arc::new(get_unassigned_objective(1.))],
+                vec![Arc::new(TotalRoutes::default())],
+                vec![TotalCost::minimize()],
+            ];
             constraint.add_module(Arc::new(FleetUsageConstraintModule::new_minimized()));
 
-            let mut objectives =
-                std::iter::once(vec![value_objective]).chain(get_default_objectives().into_iter()).collect::<Vec<_>>();
+            if let Some(max_value) = props.max_job_value {
+                let (value_module, value_objective) = get_value(max_value, None, None);
+                objectives.insert(0, vec![value_objective]);
+                constraint.add_module(value_module);
+            }
 
-            if has_order {
+            if props.has_order {
                 let (order_module, order_objective) = get_order(false);
                 constraint.add_module(order_module);
-                objectives.insert(2, vec![order_objective]);
+                objectives.insert(if props.max_job_value.is_some() { 2 } else { 1 }, vec![order_objective]);
             }
 
             ProblemObjective::new(objectives)
-        }
-        (None, None, true) => {
-            let (order_module, order_objective) = get_order(false);
-
-            constraint.add_module(order_module);
-            constraint.add_module(Arc::new(FleetUsageConstraintModule::new_minimized()));
-
-            let mut objectives = get_default_objectives();
-            objectives.insert(1, vec![order_objective]);
-
-            ProblemObjective::new(objectives)
-        }
-        _ => {
-            constraint.add_module(Arc::new(FleetUsageConstraintModule::new_minimized()));
-            ProblemObjective::new(get_default_objectives())
         }
     })
 }
@@ -140,7 +141,7 @@ fn get_value(
         Arc::new(move |solution| {
             solution.unassigned.iter().map(|(job, _)| get_unassigned_job_estimate(job, break_value, 0.)).sum()
         }),
-        Arc::new(|job| job.dimens().get_value::<f64>("value").cloned().unwrap_or(0.)),
+        ValueFn::Left(Arc::new(|job| job.dimens().get_value::<f64>("value").cloned().unwrap_or(0.))),
         Arc::new(|job, value| match job {
             Job::Single(single) => {
                 let mut dimens = single.dimens.clone();
@@ -150,16 +151,54 @@ fn get_value(
             }
             _ => job.clone(),
         }),
+        TOTAL_VALUE_KEY,
+        -1,
     )
 }
 
 fn get_order(is_constrained: bool) -> (TargetConstraint, TargetObjective) {
-    let order_func = Arc::new(|single: &Single| single.dimens.get_value::<i32>("order").map(|order| *order as f64));
+    let order_fn = OrderFn::Left(Arc::new(|single| single.dimens.get_value::<i32>("order").map(|order| *order as f64)));
 
     if is_constrained {
-        CoreTourOrder::new_constrained(order_func, TOUR_ORDER_CONSTRAINT_CODE)
+        CoreTourOrder::new_constrained(order_fn, TOUR_ORDER_KEY, TOUR_ORDER_CONSTRAINT_CODE)
     } else {
-        CoreTourOrder::new_unconstrained(order_func)
+        CoreTourOrder::new_unconstrained(order_fn, TOUR_ORDER_KEY)
+    }
+}
+
+fn get_area(
+    max_value: f64,
+    break_value: Option<f64>,
+    is_constrained: bool,
+    is_value_preferred: bool,
+) -> (TargetConstraint, Vec<TargetObjective>) {
+    let break_value = break_value.unwrap_or(100.);
+
+    let order_fn: ActorOrderFn = Arc::new(|actor, single| {
+        actor
+            .vehicle
+            .dimens
+            .get_value::<HashMap<String, (usize, f64)>>("areas")
+            .and_then(|index| single.dimens.get_id().and_then(|id| index.get(id)))
+            .map(|(order, _)| *order as f64)
+    });
+    let value_fn: ActorValueFn = Arc::new(|actor, job| {
+        actor
+            .vehicle
+            .dimens
+            .get_value::<HashMap<String, (usize, f64)>>("areas")
+            .and_then(|index| job.dimens().get_id().and_then(|id| index.get(id)))
+            .map(|(_, value)| *value)
+            .unwrap_or(0.)
+    });
+    let solution_fn: SolutionValueFn = Arc::new(move |solution| {
+        solution.unassigned.iter().map(|(job, _)| get_unassigned_job_estimate(job, break_value, 0.)).sum()
+    });
+
+    if is_constrained {
+        AreaModule::new_constrained(order_fn, value_fn, solution_fn, max_value, AREA_CONSTRAINT_CODE)
+    } else {
+        AreaModule::new_unconstrained(order_fn, value_fn, solution_fn, max_value, is_value_preferred)
     }
 }
 
@@ -188,14 +227,6 @@ fn get_load_balance(
             Arc::new(|loaded, capacity| loaded.value as f64 / capacity.value as f64),
         )
     }
-}
-
-fn get_default_objectives() -> Vec<Vec<TargetObjective>> {
-    vec![
-        vec![Arc::new(get_unassigned_objective(1.))],
-        vec![Arc::new(TotalRoutes::default())],
-        vec![TotalCost::minimize()],
-    ]
 }
 
 fn get_unassigned_objective(break_value: f64) -> TotalUnassignedJobs {

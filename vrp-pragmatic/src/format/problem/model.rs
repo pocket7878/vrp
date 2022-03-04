@@ -38,6 +38,15 @@ pub struct Relation {
     pub shift_index: Option<usize>,
 }
 
+/// An area is the way to control job execution order.
+#[derive(Clone, Deserialize, Debug, Serialize)]
+pub struct Area {
+    /// An unique id of the area.
+    pub id: String,
+    /// List of job ids.
+    pub jobs: Vec<String>,
+}
+
 /// A job skills limitation for a vehicle.
 #[derive(Clone, Deserialize, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -222,6 +231,10 @@ pub struct Plan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relations: Option<Vec<Relation>>,
 
+    /// List of areas.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub areas: Option<Vec<Area>>,
+
     /// Specifies clustering parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clustering: Option<Clustering>,
@@ -364,36 +377,45 @@ pub struct VehicleLimits {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tour_size: Option<usize>,
 
-    /// Specifies a list of areas where vehicle can serve jobs.
+    /// Specifies a list of area ids where vehicle can serve jobs.
     /// No area restrictions when omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_areas: Option<Vec<AreaLimit>>,
+    pub areas: Option<Vec<Vec<AreaLimit>>>,
 }
 
-/// Specifies area limit.
+/// An area limit.
 #[derive(Clone, Deserialize, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AreaLimit {
-    /// An area priority, bigger value - less important.
-    /// Default is 1.
-    pub priority: Option<usize>,
-    /// An area outer shape.
-    pub outer_shape: Vec<Location>,
+    /// An area id.
+    pub area_id: String,
+    /// A value added to the total value once job is served in given area.
+    pub job_value: f64,
 }
 
-/// Vehicle break time variant.
+/// Vehicle optional break time variant.
 #[derive(Clone, Deserialize, Debug, Serialize)]
 #[serde(untagged)]
-pub enum VehicleBreakTime {
+pub enum VehicleOptionalBreakTime {
     /// Break time is defined by a time window with time specified in RFC3339 format.
     TimeWindow(Vec<String>),
     /// Break time is defined by a time offset range.
     TimeOffset(Vec<f64>),
 }
 
+/// Vehicle required break time variant.
+#[derive(Clone, Deserialize, Debug, Serialize)]
+#[serde(untagged)]
+pub enum VehicleRequiredBreakTime {
+    /// Break time is defined by exact time in RFC3339 format.
+    ExactTime(String),
+    /// Break time is defined by amount of seconds since driving time.
+    OffsetTime(f64),
+}
+
 /// Vehicle break place.
 #[derive(Clone, Deserialize, Debug, Serialize)]
-pub struct VehicleBreakPlace {
+pub struct VehicleOptionalBreakPlace {
     /// Break duration.
     pub duration: f64,
     /// Break location.
@@ -406,7 +428,7 @@ pub struct VehicleBreakPlace {
 
 /// Vehicle break policy.
 #[derive(Clone, Deserialize, Debug, Serialize)]
-pub enum VehicleBreakPolicy {
+pub enum VehicleOptionalBreakPolicy {
     /// Allows to skip break if actual tour schedule doesn't intersect with vehicle time window.
     #[serde(rename(deserialize = "skip-if-no-intersection", serialize = "skip-if-no-intersection"))]
     SkipIfNoIntersection,
@@ -415,17 +437,27 @@ pub enum VehicleBreakPolicy {
     SkipIfArrivalBeforeEnd,
 }
 
-/// Vehicle break.
+/// Specifies a vehicle break.
 #[derive(Clone, Deserialize, Debug, Serialize)]
-pub struct VehicleBreak {
-    /// Break time.
-    pub time: VehicleBreakTime,
-
-    /// Vehicle break places.
-    pub places: Vec<VehicleBreakPlace>,
-
-    /// Specifies vehicle break policy.
-    pub policy: Option<VehicleBreakPolicy>,
+#[serde(untagged)]
+pub enum VehicleBreak {
+    /// An optional break which is more flexible, but might be not assigned.
+    Optional {
+        /// Break time.
+        time: VehicleOptionalBreakTime,
+        /// Vehicle break places.
+        places: Vec<VehicleOptionalBreakPlace>,
+        /// Specifies vehicle break policy.
+        policy: Option<VehicleOptionalBreakPolicy>,
+    },
+    /// A break which has to be assigned. It is less flexible than optional break, but has strong
+    /// assignment guarantee.
+    Required {
+        /// Break time.
+        time: VehicleRequiredBreakTime,
+        /// Break duration.
+        duration: f64,
+    },
 }
 
 /// Specifies a vehicle type.
@@ -581,9 +613,23 @@ pub enum Objective {
     /// An objective to control order of job activities in the tour.
     #[serde(rename(deserialize = "tour-order", serialize = "tour-order"))]
     TourOrder {
-        /// If the proper is set to true, then order is enforced as hard constraint.
+        /// If the property is set to true, then order is enforced as hard constraint.
         #[serde(rename = "isConstrained")]
         is_constrained: bool,
+    },
+
+    /// An objective to control distribution of the jobs across different areas.
+    #[serde(rename(deserialize = "area-order", serialize = "area-order"))]
+    AreaOrder {
+        /// Specifies a weight of skipped breaks. Default value is 100.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        breaks: Option<f64>,
+        /// If the property is set to true, then order is enforced as hard constraint.
+        #[serde(rename = "isConstrained")]
+        is_constrained: bool,
+        /// If the property is set to true, then value objective is preferred over violations counter.
+        #[serde(rename = "isValuePreferred")]
+        is_value_preferred: Option<bool>,
     },
 }
 

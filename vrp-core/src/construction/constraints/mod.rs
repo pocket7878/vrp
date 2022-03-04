@@ -76,16 +76,9 @@ pub const MAX_PAST_CAPACITY_KEY: i32 = 13;
 pub const RELOAD_INTERVALS_KEY: i32 = 14;
 /// A key which tracks max load in tour.
 pub const MAX_LOAD_KEY: i32 = 15;
-/// A key which tracks total value.
-pub const TOTAL_VALUE_KEY: i32 = 16;
-/// A key which tracks tour order statistics.
-pub const TOUR_ORDER_KEY: i32 = 17;
 
 mod pipeline;
 pub use self::pipeline::*;
-
-mod area;
-pub use self::area::*;
 
 mod transport;
 pub use self::transport::*;
@@ -106,11 +99,15 @@ mod fleet_usage;
 pub use self::fleet_usage::*;
 
 use crate::construction::heuristics::RouteContext;
-use crate::models::problem::TransportCost;
+use crate::models::problem::{ActivityCost, TransportCost};
 
 /// Updates route schedule.
-pub fn update_route_schedule(route_ctx: &mut RouteContext, transport: &(dyn TransportCost + Send + Sync)) {
-    TransportConstraintModule::update_route_schedules(route_ctx, transport);
-    TransportConstraintModule::update_route_states(route_ctx, transport);
+pub fn update_route_schedule(
+    route_ctx: &mut RouteContext,
+    activity: &(dyn ActivityCost + Send + Sync),
+    transport: &(dyn TransportCost + Send + Sync),
+) {
+    TransportConstraintModule::update_route_schedules(route_ctx, activity, transport);
+    TransportConstraintModule::update_route_states(route_ctx, activity, transport);
     TransportConstraintModule::update_statistics(route_ctx, transport);
 }

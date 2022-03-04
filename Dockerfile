@@ -1,4 +1,4 @@
-FROM rust:1.58.1-alpine AS Builder
+FROM rust:1.59-alpine AS Builder
 
 LABEL maintainer="Ilya Builuk <ilya.builuk@gmail.com>" \
       org.opencontainers.image.title="A Vehicle Routing Problem solver CLI" \
@@ -13,6 +13,7 @@ WORKDIR /src/
 
 # copy source code
 COPY Cargo.toml ./
+COPY experiments/heuristic-research ./experiments/heuristic-research
 COPY examples ./examples
 COPY rosomaxa ./rosomaxa
 COPY vrp-core ./vrp-core
